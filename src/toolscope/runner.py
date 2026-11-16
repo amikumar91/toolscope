@@ -29,11 +29,13 @@ class RunResult:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         redact = self.suite.redact
-        (out / "traces.jsonl").write_text(redact("\n".join(t.model_dump_json() for t in self.traces) + "\n"))
-        (out / "scores.jsonl").write_text(redact("\n".join(s.model_dump_json() for s in self.scores) + "\n"))
+        (out / "traces.jsonl").write_text(redact("\n".join(t.model_dump_json() for t in self.traces) + "\n"),
+                                          encoding="utf-8")
+        (out / "scores.jsonl").write_text(redact("\n".join(s.model_dump_json() for s in self.scores) + "\n"),
+                                          encoding="utf-8")
         (out / "summary.json").write_text(redact(json.dumps({
             "suite": self.suite.name, "tool_count": self.tool_count, "catalogue_tokens": self.catalogue_tokens,
-            "groups": [g.model_dump() for g in self.stats]}, indent=2)))
+            "groups": [g.model_dump() for g in self.stats]}, indent=2)), encoding="utf-8")
         return out
 
 

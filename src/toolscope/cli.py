@@ -43,7 +43,7 @@ def run(
     path = result.save(out)
     (path / "report.html").write_text(suite.redact(render_html(result.stats, result.scores, suite_name=suite.name,
                                                                tool_count=result.tool_count,
-                                                               catalogue_tokens=result.catalogue_tokens)))
+                                                               catalogue_tokens=result.catalogue_tokens)), encoding="utf-8")
     print_console(result.stats, console)
     console.print(f"\n[dim]wrote {path}/report.html, summary.json, scores.jsonl, traces.jsonl, servers.log[/dim]")
     if fail_under is not None:
@@ -57,12 +57,13 @@ def run(
 @app.command()
 def report(results_dir: Path = typer.Argument(Path("toolscope-results"))):
     """Re-render the report from saved scores.jsonl."""
-    scores = [RunScore.model_validate_json(l) for l in (results_dir / "scores.jsonl").read_text().splitlines() if l]
-    summary = json.loads((results_dir / "summary.json").read_text())
+    scores = [RunScore.model_validate_json(l) for l in (results_dir / "scores.jsonl").read_text(encoding="utf-8").splitlines() if l]
+    summary = json.loads((results_dir / "summary.json").read_text(encoding="utf-8"))
     stats: list[GroupStats] = aggregate(scores)
     (results_dir / "report.html").write_text(render_html(stats, scores, suite_name=summary["suite"],
                                                          tool_count=summary["tool_count"],
-                                                         catalogue_tokens=summary["catalogue_tokens"]))
+                                                         catalogue_tokens=summary["catalogue_tokens"]),
+                                         encoding="utf-8")
     print_console(stats, console)
 
 
