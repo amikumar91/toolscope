@@ -41,9 +41,9 @@ def run(
         result = asyncio.run(run_suite(suite, on_progress=lambda s: prog.advance(bar),
                                      server_log=str(out / "servers.log")))
     path = result.save(out)
-    (path / "report.html").write_text(render_html(result.stats, result.scores, suite_name=suite.name,
-                                                  tool_count=result.tool_count,
-                                                  catalogue_tokens=result.catalogue_tokens))
+    (path / "report.html").write_text(suite.redact(render_html(result.stats, result.scores, suite_name=suite.name,
+                                                               tool_count=result.tool_count,
+                                                               catalogue_tokens=result.catalogue_tokens)))
     print_console(result.stats, console)
     console.print(f"\n[dim]wrote {path}/report.html, summary.json, scores.jsonl, traces.jsonl, servers.log[/dim]")
     if fail_under is not None:

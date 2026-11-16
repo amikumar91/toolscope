@@ -56,6 +56,25 @@ agents:
 
 Use `temperature > 0` with `repeats >= 3`. pass^k only means something if runs can differ.
 
+### Secrets and environment variables
+
+Keep tokens out of the suite file by referencing environment variables:
+
+```yaml
+servers:
+  - {name: github, transport: http, url: "https://api.githubcopilot.com/mcp/",
+     headers: {Authorization: "Bearer ${GITHUB_TOKEN}"}}
+  - {name: db, command: "${PYTHON:-python}", args: [db_server.py], env: {DB_PASSWORD: "${DB_PASSWORD}"}}
+agents:
+  - {id: gpt, kind: litellm, model: openai/gpt-4.1-mini, params: {api_base: "${OPENAI_BASE:-https://api.openai.com/v1}"}}
+```
+
+- `${VAR}` expands to the variable's value. If it isn't set, loading fails with `server 'github': env var GITHUB_TOKEN is not set`.
+- `${VAR:-default}` falls back to `default` when `VAR` is unset or empty.
+- `$$` writes a literal `$`. A bare `$VAR` (no braces) is left as-is.
+- Expansion applies only to `servers[].env`, `headers`, `url`, `command`, `args` and `agents[].params`. Task prompts and expectations are never expanded, so they can contain `$` freely.
+- Values expanded into `env`, `headers` and `params` are replaced with `***` in `traces.jsonl`, `scores.jsonl`, `summary.json` and `report.html`. `servers.log` is raw server stderr and isn't scrubbed.
+
 ## Evaluate your own agent (LangGraph, pydantic-ai, OpenAI Agents SDK, hand-rolled)
 
 Point `ref` at an async callable. It receives the prompt and an `AgentContext`, and does **one** of these:
