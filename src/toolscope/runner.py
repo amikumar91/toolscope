@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeVar
+
+from pydantic import BaseModel
 
 from .agent import AgentFn, load_ref, run_builtin, run_custom
 from .config import AgentConfig, Suite, Task
@@ -14,6 +16,8 @@ from .mcp_pool import MCPPool
 from .metrics import GroupStats, RunScore, aggregate, score
 from .search import BM25Retriever
 from .trace import Trace
+
+M = TypeVar("M", bound=BaseModel)
 
 
 @dataclass
@@ -25,17 +29,25 @@ class RunResult:
     tool_count: int
     catalogue_tokens: int
 
+    def redacted(self) -> "RunResult":
+        """A copy with suite secrets scrubbed from every string field (structurally, so JSON stays valid)."""
+        r = self.suite.redact_obj
+
+        def clean(models: list[M]) -> list[M]:
+            return [type(m).model_validate(r(m.model_dump(mode="json"))) for m in models]
+
+        return replace(self, traces=clean(self.traces), scores=clean(self.scores), stats=clean(self.stats))
+
     def save(self, out_dir: str | Path) -> Path:
+        """Write traces.jsonl, scores.jsonl and summary.json, with secrets redacted before serialising."""
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        redact = self.suite.redact
-        (out / "traces.jsonl").write_text(redact("\n".join(t.model_dump_json() for t in self.traces) + "\n"),
-                                          encoding="utf-8")
-        (out / "scores.jsonl").write_text(redact("\n".join(s.model_dump_json() for s in self.scores) + "\n"),
-                                          encoding="utf-8")
-        (out / "summary.json").write_text(redact(json.dumps({
+        red = self.redacted()
+        (out / "traces.jsonl").write_text("".join(t.model_dump_json() + "\n" for t in red.traces), encoding="utf-8")
+        (out / "scores.jsonl").write_text("".join(s.model_dump_json() + "\n" for s in red.scores), encoding="utf-8")
+        (out / "summary.json").write_text(json.dumps({
             "suite": self.suite.name, "tool_count": self.tool_count, "catalogue_tokens": self.catalogue_tokens,
-            "groups": [g.model_dump() for g in self.stats]}, indent=2)), encoding="utf-8")
+            "groups": [g.model_dump() for g in red.stats]}, indent=2), encoding="utf-8")
         return out
 
 
@@ -45,7 +57,8 @@ async def run_suite(suite: Suite, on_progress: Callable[[RunScore], None] | None
     from .tokens import count
 
     agent_fns = dict(agent_fns or {})
-    async with MCPPool(suite.servers, base_dir=str(suite.base_dir), errlog_path=server_log) as pool:
+    async with MCPPool(suite.servers, base_dir=str(suite.base_dir), errlog_path=server_log,
+                       redact=suite.redact) as pool:
         schemas = {q: s.input_schema for q, s in pool.tools.items()}
         catalogue_tokens = count([s.openai() for s in pool.tools.values()])
         retriever = BM25Retriever(list(pool.tools.values()))

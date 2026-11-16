@@ -1,7 +1,6 @@
 """Suite configuration: which MCP servers, which models/agents, which tasks, which exposure modes."""
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -14,8 +13,10 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 # `$$` -> literal `$`; `${VAR}` / `${VAR:-default}` -> environment value. A bare `$VAR` is left alone.
 _VAR_RE = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _SERVER_INTERP_KEYS = ("env", "headers", "url", "command", "args")
-_SECRET_KEYS = ("env", "headers")   # values expanded here are scrubbed from every output file
+_SECRET_KEYS = ("env", "headers", "url", "args")  # values expanded here are scrubbed from every output file
 _MIN_SECRET_LEN = 4                 # don't scrub trivially short values, they'd mangle unrelated text
+# booleans and plain numbers (DEBUG=true, PORT=8080) are config, not credentials; scrubbing them mangles text
+_TRIVIAL_RE = re.compile(r"(?i)(true|false|yes|no|on|off|null|none|[-+]?\d+(\.\d+)?)")
 REDACTED = "***"
 
 
@@ -38,7 +39,7 @@ def interpolate(value: Any, owner: str, secrets: set[str] | None = None) -> Any:
         name, default = m.group(1), m.group(2)
         env = os.environ.get(name)
         if env:
-            if secrets is not None and len(env) >= _MIN_SECRET_LEN:
+            if secrets is not None and len(env) >= _MIN_SECRET_LEN and not _TRIVIAL_RE.fullmatch(env.strip()):
                 secrets.add(env)
             return env
         if default is not None:
@@ -153,12 +154,28 @@ class Suite(BaseModel):
     _secrets: set[str] = PrivateAttr(default_factory=set)
 
     def redact(self, text: str) -> str:
-        """Replace every env-var value expanded into server env/headers or agent params with `***`."""
-        # also the JSON- and HTML-escaped spellings, since that's how they appear in the output files
-        forms = {f for s in self._secrets for f in (s, json.dumps(s)[1:-1], html.escape(s))}
+        """Replace every env-var value expanded into server env/headers/url/args or agent params with `***`.
+
+        For plain text (log lines, a single string value). Never run it over serialised JSON/HTML: use
+        `redact_obj` on the data before serialising, so JSON syntax and non-string values are never touched.
+        """
+        # also the JSON-escaped spelling, for tool results that embed the secret in JSON text
+        forms = {f for s in self._secrets for f in (s, json.dumps(s)[1:-1])}
         for s in sorted(forms, key=len, reverse=True):
             text = text.replace(s, REDACTED)
         return text
+
+    def redact_obj(self, obj: Any) -> Any:
+        """Return a copy of `obj` (e.g. a `model_dump(mode="json")`) with secrets scrubbed from string keys and values."""
+        if not self._secrets:
+            return obj
+        if isinstance(obj, str):
+            return self.redact(obj)
+        if isinstance(obj, dict):
+            return {self.redact_obj(k): self.redact_obj(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self.redact_obj(v) for v in obj]
+        return obj
 
     @classmethod
     def load(cls, path: str | Path) -> "Suite":

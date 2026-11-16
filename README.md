@@ -73,7 +73,8 @@ agents:
 - `${VAR:-default}` falls back to `default` when `VAR` is unset or empty.
 - `$$` writes a literal `$`. A bare `$VAR` (no braces) is left as-is.
 - Expansion applies only to `servers[].env`, `headers`, `url`, `command`, `args` and `agents[].params`. Task prompts and expectations are never expanded, so they can contain `$` freely.
-- Values expanded into `env`, `headers` and `params` are replaced with `***` in `traces.jsonl`, `scores.jsonl`, `summary.json` and `report.html`. `servers.log` is raw server stderr and isn't scrubbed.
+- Values expanded into `env`, `headers`, `url`, `args` and `params` are treated as secrets and replaced with `***` inside string values of `traces.jsonl`, `scores.jsonl`, `summary.json` and `report.html`, and in each line of `servers.log` (server stderr). JSON structure and non-string values are never touched, so outputs always stay parseable.
+- Values shorter than 4 characters, booleans (`true`, `false`, `yes`, `no`, `on`, `off`) and plain numbers (e.g. `DEBUG=true`, `PORT=8080`) aren't treated as secrets. `${VAR:-default}` fallbacks and `command` expansions aren't either.
 
 ## Evaluate your own agent (LangGraph, pydantic-ai, OpenAI Agents SDK, hand-rolled)
 
