@@ -178,6 +178,8 @@ The built-in retriever is BM25 over name + description + parameter names. To tes
 
 CI: `toolscope run suite.yaml --fail-under 0.9` exits 1 if any agent×mode group's pass^k is below 90%.
 
+Each job is isolated: if one run raises, it is recorded as a `crash` run (with the error) and the rest of the suite carries on. An agent that cannot be built at all (an unresolvable `ref`, a `litellm` agent without `model`, ...) is reported once as a `CONFIG ERROR`, every one of its runs is recorded as `crash` with an error starting `config_error:`, and `toolscope run` exits 1. `traces.jsonl` and `scores.jsonl` are appended and flushed as each job finishes, so an interrupted run still leaves one valid line per completed job; `summary.json` and `report.html` are written at the end (and the `.jsonl` files rewritten in suite order).
+
 ## Layout
 
 ```
