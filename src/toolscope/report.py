@@ -43,7 +43,7 @@ def print_console(stats: list[GroupStats], console: Console | None = None) -> No
         )
     for g in stats:
         fails = {k: v for k, v in g.funnel.items() if v}
-        top = max(fails, key=fails.get) if fails else "—"
+        top = max(fails, key=lambda k: fails[k]) if fails else "—"
         t.add_row(
             g.agent_id,
             g.mode,
@@ -157,9 +157,9 @@ def render_html(
 
     if best:
         fails = {k: v for k, v in best.funnel.items() if v}
-        top = max(fails, key=fails.get) if fails else None
+        top = max(fails, key=lambda k: fails[k]) if fails else None
         p.append("<div class='tiles'>")
-        for k, v, n in [
+        for k, v, note in [
             ("Best pass@1", _pct(best.pass_at_1), f"{best.agent_id} · {best.mode}"),
             ("Its pass^k", _pct(best.pass_hat_k), f"k = {best.k}, all repeats pass"),
             ("Its selection accuracy", _pct(best.selection_accuracy), "expected tools called"),
@@ -170,27 +170,27 @@ def render_html(
             ),
         ]:
             p.append(
-                f"<div class='tile'><div class='k'>{e(k)}</div><div class='v'>{e(v)}</div><div class='n'>{e(n)}</div></div>"
+                f"<div class='tile'><div class='k'>{e(k)}</div><div class='v'>{e(v)}</div><div class='n'>{e(note)}</div></div>"
             )
         p.append("</div>")
 
     # ---- funnel chart -------------------------------------------------------------------------
     p.append("<h2>Where runs fail: earliest broken stage per run</h2><div class='legend'>")
-    for i, s in enumerate(_SEG):
-        p.append(f"<span><i style='background:{_seg_color(i)}'></i>{e(s)}</span>")
+    for i, seg in enumerate(_SEG):
+        p.append(f"<span><i style='background:{_seg_color(i)}'></i>{e(seg)}</span>")
     p.append("</div>")
     for g in stats:
         counts = {"passed": g.runs - sum(g.funnel.values()), **g.funnel}
         p.append(
             f"<div class='frow'><div class='lbl'>{e(g.agent_id)} <small>· {e(g.mode)}</small></div><div class='bar'>"
         )
-        for i, s in enumerate(_SEG):
-            n = counts.get(s, 0)
+        for i, seg in enumerate(_SEG):
+            n = counts.get(seg, 0)
             if not n:
                 continue
             p.append(
-                f"<div class='seg' style='flex:{n};background:{_seg_color(i)}' aria-label='{e(s)} {n}'>"
-                f"<span class='tip'>{e(s)}: {n} of {g.runs} runs ({n / g.runs:.0%})</span></div>"
+                f"<div class='seg' style='flex:{n};background:{_seg_color(i)}' aria-label='{e(seg)} {n}'>"
+                f"<span class='tip'>{e(seg)}: {n} of {g.runs} runs ({n / g.runs:.0%})</span></div>"
             )
         p.append(f"</div><div class='pct'>{_pct(g.pass_at_1)}</div></div>")
 

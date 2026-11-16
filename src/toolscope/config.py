@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 # `$$` -> literal `$`; `${VAR}` / `${VAR:-default}` -> environment value. A bare `$VAR` is left alone.
 _VAR_RE = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+ExposureMode = Literal["all", "search"]
+
 _SERVER_INTERP_KEYS = ("env", "headers", "url", "command", "args")
 _SECRET_KEYS = (
     "env",
@@ -115,9 +117,7 @@ class AgentConfig(BaseModel):
     temperature: float = 0.0
     max_turns: int = 8
     params: dict[str, Any] = Field(default_factory=dict)  # passed through to litellm / your agent
-    modes: list[Literal["all", "search"]] | None = (
-        None  # override suite exposure modes for this agent
-    )
+    modes: list[ExposureMode] | None = None  # override suite exposure modes for this agent
 
 
 class ExpectedCall(BaseModel):
@@ -153,7 +153,7 @@ class ExposureConfig(BaseModel):
     search -> only a `search_tools` meta-tool up front; schemas are loaded on demand (tool-search / deferred loading)
     """
 
-    modes: list[Literal["all", "search"]] = Field(default_factory=lambda: ["all"])
+    modes: list[ExposureMode] = Field(default_factory=lambda: list[ExposureMode](["all"]))
     search_top_k: int = 5
 
 

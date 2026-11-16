@@ -12,7 +12,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from .agent import AgentFn, load_ref, run_builtin, run_custom
-from .config import AgentConfig, Suite, Task
+from .config import AgentConfig, ExposureMode, Suite, Task
 from .llm import make_llm
 from .mcp_pool import MCPPool
 from .metrics import GroupStats, RunScore, aggregate, score
@@ -88,7 +88,7 @@ async def run_suite(
         traces: list[Trace] = []
         scores: list[RunScore] = []
 
-        async def one(cfg: AgentConfig, mode: str, task: Task, rep: int):
+        async def one(cfg: AgentConfig, mode: ExposureMode, task: Task, rep: int) -> None:
             async with sem:
                 if cfg.kind == "python":
                     fn = agent_fns.get(cfg.id) or load_ref(cfg.ref or "", str(suite.base_dir))
@@ -117,7 +117,7 @@ async def run_suite(
         await asyncio.gather(*jobs)
         tool_count = len(pool.tools)
 
-    order = {
+    order: dict[tuple[str, str, str], int] = {
         (a.id, m, t.id): i
         for i, (a, m, t) in enumerate(
             (a, m, t)

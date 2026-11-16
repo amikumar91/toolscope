@@ -22,7 +22,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .config import AgentConfig, Task
+from .config import AgentConfig, ExposureMode, Task
 from .llm import LLM
 from .mcp_pool import MCPPool, ToolSpec
 from .search import SEARCH_TOOL_SPEC, BM25Retriever, Retriever
@@ -42,7 +42,7 @@ async def run_builtin(
     task: Task,
     cfg: AgentConfig,
     llm: LLM,
-    mode: str,
+    mode: ExposureMode,
     repeat: int,
     top_k: int = 5,
     retriever: Retriever | None = None,
@@ -181,7 +181,7 @@ class AgentContext:
         self,
         pool: MCPPool,
         trace: Trace,
-        mode: str,
+        mode: ExposureMode,
         task: Task,
         params: dict,
         top_k: int,
@@ -274,7 +274,7 @@ async def run_custom(
     task: Task,
     cfg: AgentConfig,
     fn: AgentFn,
-    mode: str,
+    mode: ExposureMode,
     repeat: int,
     top_k: int = 5,
     retriever: Retriever | None = None,
@@ -287,7 +287,7 @@ async def run_custom(
     t0 = time.perf_counter()
     try:
         try:
-            out = fn(task.prompt, ctx)
+            out: Any = fn(task.prompt, ctx)
             out = await out if inspect.isawaitable(out) else out
         except AgentError as e:
             out = e.messages

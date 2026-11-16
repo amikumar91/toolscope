@@ -110,12 +110,12 @@ class Trace(BaseModel):
                 if m.get("content") and not m.get("tool_calls"):
                     t.final_answer = _text(m["content"])
             elif role == "tool":
-                call = by_id.get(m.get("tool_call_id", ""))
-                if call:
+                prev = by_id.get(m.get("tool_call_id", ""))
+                if prev:
                     txt = _text(m.get("content", ""))
-                    call.result_preview = txt[:300]
+                    prev.result_preview = txt[:300]
                     if m.get("is_error") or txt.lower().startswith(("error", "tool error")):
-                        call.ok, call.error = False, txt[:300]
+                        prev.ok, prev.error = False, txt[:300]
         t.turns = turn
         return t
 

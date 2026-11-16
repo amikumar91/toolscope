@@ -202,7 +202,8 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
                 (i for i, c in enumerate(real) if name_matches(e.name, c.name) and c.ok), None
             )
             idx.append(pos)
-        s.order_ok = None not in idx and idx == sorted(idx)
+        found = [i for i in idx if i is not None]
+        s.order_ok = len(found) == len(idx) and found == sorted(found)
 
     # ---- outcome ------------------------------------------------------------------------------
     checks: list[bool] = []
