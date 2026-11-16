@@ -1,8 +1,9 @@
 """Two small demo MCP servers with deliberately confusable tools (decoys), so selection metrics have teeth.
 
-    python servers.py shop   # orders, shipments, refunds
-    python servers.py crm    # customers, tickets
+python servers.py shop   # orders, shipments, refunds
+python servers.py crm    # customers, tickets
 """
+
 import sys
 
 try:  # mcp 2.x
@@ -11,9 +12,27 @@ except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as Server
 
 ORDERS = {
-    "ORD-1042": {"status": "shipped", "carrier": "BlueDart", "tracking": "BD778812", "total": 2499, "customer": "CUS-7"},
-    "ORD-1043": {"status": "processing", "carrier": None, "tracking": None, "total": 899, "customer": "CUS-7"},
-    "ORD-2001": {"status": "delivered", "carrier": "Delhivery", "tracking": "DL11002", "total": 15999, "customer": "CUS-9"},
+    "ORD-1042": {
+        "status": "shipped",
+        "carrier": "BlueDart",
+        "tracking": "BD778812",
+        "total": 2499,
+        "customer": "CUS-7",
+    },
+    "ORD-1043": {
+        "status": "processing",
+        "carrier": None,
+        "tracking": None,
+        "total": 899,
+        "customer": "CUS-7",
+    },
+    "ORD-2001": {
+        "status": "delivered",
+        "carrier": "Delhivery",
+        "tracking": "DL11002",
+        "total": 15999,
+        "customer": "CUS-9",
+    },
 }
 CUSTOMERS = {
     "CUS-7": {"name": "Priya Raman", "email": "priya@example.com", "tier": "gold"},

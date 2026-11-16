@@ -1,12 +1,15 @@
 """Connect to N MCP servers at once, namespace their tools, and route calls. Compatible with mcp SDK 1.x and 2.x."""
+
 from __future__ import annotations
 
+import importlib
 import os
 import threading
 import time
+from collections.abc import Callable, Iterator
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass
-from typing import IO, Any, Callable, Iterator
+from typing import Any, TextIO
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -18,18 +21,21 @@ SEP = "__"
 
 @dataclass
 class ToolSpec:
-    qualified: str          # server__tool
+    qualified: str  # server__tool
     server: str
     name: str
     description: str
     input_schema: dict[str, Any]
 
     def openai(self) -> dict[str, Any]:
-        return {"type": "function", "function": {
-            "name": self.qualified,
-            "description": self.description,
-            "parameters": self.input_schema or {"type": "object", "properties": {}},
-        }}
+        return {
+            "type": "function",
+            "function": {
+                "name": self.qualified,
+                "description": self.description,
+                "parameters": self.input_schema or {"type": "object", "properties": {}},
+            },
+        }
 
 
 @dataclass
@@ -58,26 +64,28 @@ def _content_text(result: Any) -> str:
     return "\n".join(parts)
 
 
-async def _http_transport(stack: AsyncExitStack, cfg: ServerConfig):
-    try:  # mcp 2.x
-        from mcp.client.streamable_http import streamable_http_client as client
-    except ImportError:  # mcp 1.x
-        from mcp.client.streamable_http import streamablehttp_client as client
-        streams = await stack.enter_async_context(client(cfg.url, headers=cfg.headers or {}))
+async def _http_transport(stack: AsyncExitStack, cfg: ServerConfig) -> tuple[Any, Any]:
+    # Symbols differ between mcp 1.x and 2.x, so look them up on Any-typed modules: this keeps
+    # mypy happy against either SDK version without version-specific `type: ignore`s.
+    assert cfg.url is not None  # guaranteed by ServerConfig validation for http transport
+    sh: Any = importlib.import_module("mcp.client.streamable_http")
+    if not hasattr(sh, "streamable_http_client"):  # mcp 1.x
+        streams = await stack.enter_async_context(
+            sh.streamablehttp_client(cfg.url, headers=cfg.headers or {})
+        )
         return streams[0], streams[1]
     # mcp 2.x takes a pre-built HTTP client for headers; build it with the SDK's own helper, since the
     # underlying library changed (httpx -> httpx2) across 2.x releases
-    try:
-        from mcp.client.streamable_http import create_mcp_http_client
-    except ImportError:
-        from mcp.shared._httpx_utils import create_mcp_http_client
-    http = await stack.enter_async_context(create_mcp_http_client(headers=cfg.headers or {}))
-    streams = await stack.enter_async_context(client(cfg.url, http_client=http))
+    make_http = getattr(sh, "create_mcp_http_client", None)
+    if make_http is None:
+        make_http = importlib.import_module("mcp.shared._httpx_utils").create_mcp_http_client
+    http = await stack.enter_async_context(make_http(headers=cfg.headers or {}))
+    streams = await stack.enter_async_context(sh.streamable_http_client(cfg.url, http_client=http))
     return streams[0], streams[1]
 
 
 @contextmanager
-def _redacting_errlog(path: str, redact: Callable[[str], str]) -> Iterator[IO[str]]:
+def _redacting_errlog(path: str, redact: Callable[[str], str]) -> Iterator[TextIO]:
     """Yield a real file (the write end of a pipe) for a server's stderr; a thread copies each line to `path`
     after `redact`, so secrets a server prints never reach the log. The subprocess needs an OS-level fd,
     which is why a Python wrapper around the log file won't do."""
@@ -96,15 +104,20 @@ def _redacting_errlog(path: str, redact: Callable[[str], str]) -> Iterator[IO[st
     try:
         yield writer
     finally:
-        writer.close()      # the server has exited by now, so this was the last write end: the pump sees EOF
+        writer.close()  # the server has exited by now, so this was the last write end: the pump sees EOF
         t.join(timeout=5)
 
 
 class MCPPool:
     """Async context manager owning all server sessions for a run."""
 
-    def __init__(self, servers: list[ServerConfig], base_dir: str | None = None, errlog_path: str | None = None,
-                 redact: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        servers: list[ServerConfig],
+        base_dir: str | None = None,
+        errlog_path: str | None = None,
+        redact: Callable[[str], str] | None = None,
+    ):
         self.servers = servers
         self.redact = redact
         self.base_dir = base_dir
@@ -113,16 +126,26 @@ class MCPPool:
         self._stack = AsyncExitStack()
         # server stderr (tracebacks from tools that raise) goes to a log file, not the console
         import tempfile
-        self.errlog_path = errlog_path or tempfile.mktemp(prefix="toolscope-servers-", suffix=".log")
 
-    async def __aenter__(self) -> "MCPPool":
+        self.errlog_path = errlog_path or tempfile.mktemp(
+            prefix="toolscope-servers-", suffix=".log"
+        )
+
+    async def __aenter__(self) -> MCPPool:
         for cfg in self.servers:
             if cfg.transport == "stdio":
-                params = StdioServerParameters(command=cfg.command, args=cfg.args, env=cfg.env,
-                                               cwd=self.base_dir)
+                assert cfg.command is not None  # guaranteed by ServerConfig validation
+                params = StdioServerParameters(
+                    command=cfg.command, args=cfg.args, env=cfg.env, cwd=self.base_dir
+                )
                 errlog = self._stack.enter_context(
-                    _redacting_errlog(self.errlog_path, self.redact) if self.redact else open(self.errlog_path, "a"))
-                read, write = await self._stack.enter_async_context(stdio_client(params, errlog=errlog))
+                    _redacting_errlog(self.errlog_path, self.redact)
+                    if self.redact
+                    else open(self.errlog_path, "a")  # noqa: SIM115 - closed by the exit stack
+                )
+                read, write = await self._stack.enter_async_context(
+                    stdio_client(params, errlog=errlog)
+                )
             else:
                 read, write = await _http_transport(self._stack, cfg)
             session = await self._stack.enter_async_context(ClientSession(read, write))
@@ -131,7 +154,9 @@ class MCPPool:
             listed = await session.list_tools()
             for t in listed.tools:
                 spec = ToolSpec(
-                    qualified=f"{cfg.name}{SEP}{t.name}", server=cfg.name, name=t.name,
+                    qualified=f"{cfg.name}{SEP}{t.name}",
+                    server=cfg.name,
+                    name=t.name,
                     description=t.description or "",
                     input_schema=_field(t, "input_schema", "inputSchema", default={}) or {},
                 )
@@ -155,6 +180,8 @@ class MCPPool:
             text = _content_text(res)
             is_err = bool(_field(res, "is_error", "isError", default=False))
             return CallOutcome(not is_err, text, ms, text[:300] if is_err else None)
-        except Exception as e:  # transport / validation errors surface to the model like real clients do
+        except (
+            Exception
+        ) as e:  # transport / validation errors surface to the model like real clients do
             ms = (time.perf_counter() - t0) * 1000
             return CallOutcome(False, f"Error: {type(e).__name__}: {e}", ms, str(e)[:300])

@@ -11,14 +11,22 @@ from toolscope.mcp_pool import CallOutcome
 from toolscope.metrics import score
 from toolscope.trace import SEARCH_TOOL
 
-TASK = Task.model_validate({"id": "t", "prompt": "status of ORD-1", "system": "be brief",
-                            "expect": {"tools": [{"name": "get_order_status", "args": {"order_id": "ORD-1"}}]}})
+TASK = Task.model_validate(
+    {
+        "id": "t",
+        "prompt": "status of ORD-1",
+        "system": "be brief",
+        "expect": {"tools": [{"name": "get_order_status", "args": {"order_id": "ORD-1"}}]},
+    }
+)
 CFG = AgentConfig(id="bot", kind="mock", max_turns=3)
 STATUS = "shop__get_order_status"
 
 
 async def test_all_mode_happy_path(pool):
-    llm = ScriptedLLM([(STATUS, {"order_id": "ORD-1"})], LLMResponse("shipped", [], 10, 5, cost_usd=0.01))
+    llm = ScriptedLLM(
+        [(STATUS, {"order_id": "ORD-1"})], LLMResponse("shipped", [], 10, 5, cost_usd=0.01)
+    )
     tr = await run_builtin(pool, TASK, CFG, llm, "all", 0)
     assert tr.error is None and tr.turns == 2 and tr.final_answer == "shipped"
     assert tr.calls[0].ok and tr.calls[0].name == STATUS
@@ -40,7 +48,9 @@ async def test_search_mode_not_loaded_vs_unknown_tool(pool):
         [(STATUS, {"order_id": "ORD-1"})],
         "shipped",
     )
-    tr = await run_builtin(pool, TASK, CFG.model_copy(update={"max_turns": 5}), llm, "search", 0, top_k=2)
+    tr = await run_builtin(
+        pool, TASK, CFG.model_copy(update={"max_turns": 5}), llm, "search", 0, top_k=2
+    )
     not_loaded, unknown, search, ok = tr.calls
     assert (not_loaded.error, not_loaded.known, not_loaded.ok) == ("not_loaded", True, False)
     assert (unknown.error, unknown.known) == ("unknown_tool", False)
@@ -48,7 +58,9 @@ async def test_search_mode_not_loaded_vs_unknown_tool(pool):
     assert ok.ok and ok.turn == 3
     assert llm.seen_tools[0] == [SEARCH_TOOL]
     assert STATUS in llm.seen_tools[2]
-    assert pool.calls == [(STATUS, {"order_id": "ORD-1"})]  # only the loaded call reached the server
+    assert pool.calls == [
+        (STATUS, {"order_id": "ORD-1"})
+    ]  # only the loaded call reached the server
 
 
 async def test_search_with_no_hits(pool):
@@ -65,7 +77,9 @@ async def test_bad_json_and_non_object_args(pool):
 
 
 async def test_server_error_is_recorded():
-    pool = FakePool(responses={STATUS: CallOutcome(False, "order not found", 2.0, "order not found")})
+    pool = FakePool(
+        responses={STATUS: CallOutcome(False, "order not found", 2.0, "order not found")}
+    )
     llm = ScriptedLLM([(STATUS, {"order_id": "ORD-1"})], "sorry")
     tr = await run_builtin(pool, TASK, CFG, llm, "all", 0)
     assert tr.calls[0].ok is False and tr.calls[0].error == "order not found"
@@ -84,8 +98,16 @@ async def test_llm_exception_is_crash(pool):
 # ---- custom agents ---------------------------------------------------------------------------
 async def test_custom_agent_routes_through_context(pool):
     async def agent(prompt, ctx: AgentContext):
-        assert ctx.mode == "search" and ctx.system == "be brief" and ctx.params == {"x": 1, "repeat": 2}
-        assert len(ctx.tools) == len(ctx.tools_openai) == 4 and ctx.servers == [] and ctx.base_dir is None
+        assert (
+            ctx.mode == "search"
+            and ctx.system == "be brief"
+            and ctx.params == {"x": 1, "repeat": 2}
+        )
+        assert (
+            len(ctx.tools) == len(ctx.tools_openai) == 4
+            and ctx.servers == []
+            and ctx.base_dir is None
+        )
         assert ctx.search_tool_openai["function"]["name"] == SEARCH_TOOL
         hits = ctx.search("order status")
         ctx.record_usage(input_tokens=7, output_tokens=3, schema_tokens=11, cost_usd=0.5)
@@ -101,14 +123,23 @@ async def test_custom_agent_routes_through_context(pool):
 
 
 async def test_custom_sync_agent_returning_none(pool):
-    tr = await run_custom(pool, TASK, AgentConfig(id="s", kind="python"), lambda p, c: None, "all", 0)
+    tr = await run_custom(
+        pool, TASK, AgentConfig(id="s", kind="python"), lambda p, c: None, "all", 0
+    )
     assert tr.final_answer == "" and tr.error is None
 
 
 HISTORY = [
     {"role": "user", "content": "status of ORD-1"},
-    {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "get_order_status",
-                                                                  "arguments": '{"order_id": "ORD-1"}'}}]},
+    {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "1",
+                "function": {"name": "get_order_status", "arguments": '{"order_id": "ORD-1"}'},
+            }
+        ],
+    },
     {"role": "tool", "tool_call_id": "1", "content": "shipped"},
 ]
 
@@ -118,7 +149,9 @@ async def test_custom_agent_returning_history(pool):
         return HISTORY + [{"role": "assistant", "content": "It shipped"}]
 
     tr = await run_custom(pool, TASK, AgentConfig(id="h", kind="python"), agent, "all", 0)
-    assert tr.final_answer == "It shipped" and tr.turns == 2 and tr.calls[0].name == "get_order_status"
+    assert (
+        tr.final_answer == "It shipped" and tr.turns == 2 and tr.calls[0].name == "get_order_status"
+    )
     assert score(tr, TASK, {}).success
 
 

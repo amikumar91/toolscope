@@ -3,8 +3,10 @@
 - LiteLLMClient: any provider LiteLLM supports (anthropic/, openai/, gemini/, bedrock/, azure/, ollama/, vllm ...)
 - MockLLM: deterministic offline model for demos and CI; `mock/sloppy` injects realistic failure modes.
 """
+
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -35,7 +37,9 @@ class LLMResponse:
 
 
 class LLM(Protocol):
-    async def complete(self, messages: list[dict], tools: list[dict], **params: Any) -> LLMResponse: ...
+    async def complete(
+        self, messages: list[dict], tools: list[dict], **params: Any
+    ) -> LLMResponse: ...
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -50,27 +54,74 @@ class LiteLLMClient:
     async def complete(self, messages, tools, **params) -> LLMResponse:
         import litellm
 
-        params.pop("seed", None)  # repeat index; real providers sample naturally (set temperature>0 for k-run variance)
+        params.pop(
+            "seed", None
+        )  # repeat index; real providers sample naturally (set temperature>0 for k-run variance)
         kw = {**self.params, **params}
-        resp = await litellm.acompletion(model=self.model, messages=messages, tools=tools or None,
-                                         temperature=self.temperature, **kw)
+        resp = await litellm.acompletion(
+            model=self.model,
+            messages=messages,
+            tools=tools or None,
+            temperature=self.temperature,
+            **kw,
+        )
         msg = resp.choices[0].message
-        calls = [LLMToolCall(tc.id, tc.function.name, tc.function.arguments or "{}")
-                 for tc in (msg.tool_calls or [])]
+        calls = [
+            LLMToolCall(tc.id, tc.function.name, tc.function.arguments or "{}")
+            for tc in (msg.tool_calls or [])
+        ]
         usage = getattr(resp, "usage", None)
         cost = None
-        try:
+        with contextlib.suppress(Exception):
             cost = litellm.completion_cost(completion_response=resp)
-        except Exception:
-            pass
-        return LLMResponse(msg.content, calls,
-                           getattr(usage, "prompt_tokens", 0) or 0,
-                           getattr(usage, "completion_tokens", 0) or 0, cost)
+        return LLMResponse(
+            msg.content,
+            calls,
+            getattr(usage, "prompt_tokens", 0) or 0,
+            getattr(usage, "completion_tokens", 0) or 0,
+            cost,
+        )
 
 
 # ---------------------------------------------------------------------------------------------------
-_STOP = set("a an the of for to and or in on at is are be my me i please can you with what whats which "
-            "it this that from by do does show tell get".split())
+_STOP = set(
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "for",
+        "to",
+        "and",
+        "or",
+        "in",
+        "on",
+        "at",
+        "is",
+        "are",
+        "be",
+        "my",
+        "me",
+        "i",
+        "please",
+        "can",
+        "you",
+        "with",
+        "what",
+        "whats",
+        "which",
+        "it",
+        "this",
+        "that",
+        "from",
+        "by",
+        "do",
+        "does",
+        "show",
+        "tell",
+        "get",
+    ]
+)
 _ID = re.compile(r"\b[A-Z]{2,}-\d+\b")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")
 _NUM = re.compile(r"(?<![\w-])\d+(?:\.\d+)?(?![\w-])")
@@ -94,14 +145,22 @@ class MockLLM:
         rng = random.Random(int(hashlib.md5(f"{prompt}|{seed}".encode()).hexdigest()[:8], 16))
         names = {t["function"]["name"]: t["function"] for t in tools}
         tool_msgs = [m for m in messages if m["role"] == "tool"]
-        called = [tc["function"]["name"] for m in messages if m["role"] == "assistant"
-                  for tc in (m.get("tool_calls") or [])]
+        called = [
+            tc["function"]["name"]
+            for m in messages
+            if m["role"] == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        ]
         last_err = tool_msgs and str(tool_msgs[-1]["content"]).lower().startswith("error")
         n_out = 12
 
         def call(name: str, args: dict) -> LLMResponse:
-            return LLMResponse(None, [LLMToolCall(f"c{len(called)}", name, json.dumps(args))],
-                               _approx(messages, tools), n_out)
+            return LLMResponse(
+                None,
+                [LLMToolCall(f"c{len(called)}", name, json.dumps(args))],
+                _approx(messages, tools),
+                n_out,
+            )
 
         real = {k: v for k, v in names.items() if k != SEARCH_TOOL}
         ranked = _rank(prompt, real)
@@ -133,7 +192,12 @@ class MockLLM:
                 remaining = top + [r for r in remaining if r not in top]
             if remaining and remaining[0][0] >= 2.5:
                 if self.sloppy and rng.random() < 0.12 and not real_called:
-                    return LLMResponse("I can answer that directly: it should be fine.", [], _approx(messages, tools), n_out)
+                    return LLMResponse(
+                        "I can answer that directly: it should be fine.",
+                        [],
+                        _approx(messages, tools),
+                        n_out,
+                    )
                 pick = remaining[0][1]
                 if self.sloppy and len(remaining) > 1 and rng.random() < 0.25:
                     pick = remaining[1][1]
@@ -144,27 +208,41 @@ class MockLLM:
 
         # 4) answer from tool results
         if tool_msgs:
-            body = " | ".join(str(m["content"])[:200] for m in tool_msgs if not str(m["content"]).startswith("Found tools"))
+            body = " | ".join(
+                str(m["content"])[:200]
+                for m in tool_msgs
+                if not str(m["content"]).startswith("Found tools")
+            )
             return LLMResponse(f"Result: {body}", [], _approx(messages, tools), 40)
-        return LLMResponse("I don't need any tools for this. Here's my answer.", [], _approx(messages, tools), 20)
+        return LLMResponse(
+            "I don't need any tools for this. Here's my answer.", [], _approx(messages, tools), 20
+        )
 
 
 def _rank(prompt: str, fns: dict[str, dict]) -> list[tuple[float, str]]:
     q = [w for w in _tokens(prompt) if w not in _STOP]
-    docs = {n: _tokens(n.split("__")[-1] + " " + (f.get("description") or "")) for n, f in fns.items()}
+    docs = {
+        n: _tokens(n.split("__")[-1] + " " + (f.get("description") or "")) for n, f in fns.items()
+    }
     df = Counter(t for d in docs.values() for t in set(d))
     N = max(len(docs), 1)
     out = []
     for n, d in docs.items():
         name_toks = set(_tokens(n.split("__")[-1]))
-        s = sum((3.0 if t in name_toks else 1.0) * math.log(1 + N / df[t]) for t in set(q) if t in set(d))
+        s = sum(
+            (3.0 if t in name_toks else 1.0) * math.log(1 + N / df[t])
+            for t in set(q)
+            if t in set(d)
+        )
         out.append((s, n))
     return sorted(out, key=lambda x: -x[0])
 
 
 def _first_pos(prompt: str, name: str) -> int:
     low = prompt.lower()
-    pos = [low.find(t) for t in _tokens(name.split("__")[-1]) if t not in _STOP and low.find(t) >= 0]
+    pos = [
+        low.find(t) for t in _tokens(name.split("__")[-1]) if t not in _STOP and low.find(t) >= 0
+    ]
     return min(pos) if pos else 10**6
 
 
@@ -194,9 +272,12 @@ def _fill(prompt: str, schema: dict, drop: bool) -> dict:
             args[name] = int(float(v)) if typ == "integer" else float(v)
         elif typ == "string" and quoted:
             args[name] = quoted.pop(0)
-        elif typ == "string" and (m := re.search(rf"\b(\w+)\s+{re.escape(lname)}\b", prompt, re.I)) \
-                and m.group(1).lower() not in _STOP:
-            args[name] = m.group(1).lower()          # e.g. "high priority" -> priority=high
+        elif (
+            typ == "string"
+            and (m := re.search(rf"\b(\w+)\s+{re.escape(lname)}\b", prompt, re.I))
+            and m.group(1).lower() not in _STOP
+        ):
+            args[name] = m.group(1).lower()  # e.g. "high priority" -> priority=high
         elif typ == "string" and name in req:
             args[name] = " ".join(w for w in _tokens(prompt) if w not in _STOP)[:80]
     if drop and req:

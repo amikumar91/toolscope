@@ -1,4 +1,5 @@
 """Suite configuration: which MCP servers, which models/agents, which tasks, which exposure modes."""
+
 from __future__ import annotations
 
 import json
@@ -12,9 +13,16 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 # `$$` -> literal `$`; `${VAR}` / `${VAR:-default}` -> environment value. A bare `$VAR` is left alone.
 _VAR_RE = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+ExposureMode = Literal["all", "search"]
+
 _SERVER_INTERP_KEYS = ("env", "headers", "url", "command", "args")
-_SECRET_KEYS = ("env", "headers", "url", "args")  # values expanded here are scrubbed from every output file
-_MIN_SECRET_LEN = 4                 # don't scrub trivially short values, they'd mangle unrelated text
+_SECRET_KEYS = (
+    "env",
+    "headers",
+    "url",
+    "args",
+)  # values expanded here are scrubbed from every output file
+_MIN_SECRET_LEN = 4  # don't scrub trivially short values, they'd mangle unrelated text
 # booleans and plain numbers (DEBUG=true, PORT=8080) are config, not credentials; scrubbing them mangles text
 _TRIVIAL_RE = re.compile(r"(?i)(true|false|yes|no|on|off|null|none|[-+]?\d+(\.\d+)?)")
 REDACTED = "***"
@@ -39,7 +47,11 @@ def interpolate(value: Any, owner: str, secrets: set[str] | None = None) -> Any:
         name, default = m.group(1), m.group(2)
         env = os.environ.get(name)
         if env:
-            if secrets is not None and len(env) >= _MIN_SECRET_LEN and not _TRIVIAL_RE.fullmatch(env.strip()):
+            if (
+                secrets is not None
+                and len(env) >= _MIN_SECRET_LEN
+                and not _TRIVIAL_RE.fullmatch(env.strip())
+            ):
                 secrets.add(env)
             return env
         if default is not None:
@@ -62,7 +74,9 @@ def _interpolate_suite(data: dict[str, Any], secrets: set[str]) -> None:
                 srv[key] = interpolate(srv[key], owner, secrets if key in _SECRET_KEYS else None)
     for agent in data.get("agents") or []:
         if isinstance(agent, dict) and "params" in agent:
-            agent["params"] = interpolate(agent["params"], f"agent '{agent.get('id', '?')}'", secrets)
+            agent["params"] = interpolate(
+                agent["params"], f"agent '{agent.get('id', '?')}'", secrets
+            )
 
 
 class ServerConfig(BaseModel):
@@ -77,7 +91,7 @@ class ServerConfig(BaseModel):
     headers: dict[str, str] | None = None
 
     @model_validator(mode="after")
-    def _check(self) -> "ServerConfig":
+    def _check(self) -> ServerConfig:
         if self.transport == "stdio" and not self.command:
             raise ValueError(f"server '{self.name}': stdio transport needs `command`")
         if self.transport == "http" and not self.url:
@@ -103,22 +117,22 @@ class AgentConfig(BaseModel):
     temperature: float = 0.0
     max_turns: int = 8
     params: dict[str, Any] = Field(default_factory=dict)  # passed through to litellm / your agent
-    modes: list[Literal["all", "search"]] | None = None   # override suite exposure modes for this agent
+    modes: list[ExposureMode] | None = None  # override suite exposure modes for this agent
 
 
 class ExpectedCall(BaseModel):
-    name: str                                   # bare tool name or "server__tool"
+    name: str  # bare tool name or "server__tool"
     args: dict[str, Any] = Field(default_factory=dict)  # subset match; values may be "re:<regex>"
 
 
 class Expectation(BaseModel):
     tools: list[ExpectedCall] = Field(default_factory=list)
-    ordered: bool = False                       # expected tools must appear in this order
-    no_tools: bool = False                      # irrelevance task: correct behaviour is calling nothing
+    ordered: bool = False  # expected tools must appear in this order
+    no_tools: bool = False  # irrelevance task: correct behaviour is calling nothing
     answer_contains: list[str] = Field(default_factory=list)  # case-insensitive substrings
     answer_regex: str | None = None
-    check: str | None = None                    # "module:function(trace, task) -> bool" for end-state checks
-    max_calls: int | None = None                # efficiency budget (defaults to len(tools) + 2)
+    check: str | None = None  # "module:function(trace, task) -> bool" for end-state checks
+    max_calls: int | None = None  # efficiency budget (defaults to len(tools) + 2)
 
 
 class Task(BaseModel):
@@ -126,7 +140,9 @@ class Task(BaseModel):
     prompt: str
     system: str | None = None
     expect: Expectation = Field(default_factory=Expectation)
-    forbid: list[str] = Field(default_factory=list)  # tools that must never be called (destructive, decoys)
+    forbid: list[str] = Field(
+        default_factory=list
+    )  # tools that must never be called (destructive, decoys)
     tags: list[str] = Field(default_factory=list)
 
 
@@ -137,7 +153,7 @@ class ExposureConfig(BaseModel):
     search -> only a `search_tools` meta-tool up front; schemas are loaded on demand (tool-search / deferred loading)
     """
 
-    modes: list[Literal["all", "search"]] = Field(default_factory=lambda: ["all"])
+    modes: list[ExposureMode] = Field(default_factory=lambda: list[ExposureMode](["all"]))
     search_top_k: int = 5
 
 
@@ -148,7 +164,7 @@ class Suite(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
     tasks_file: str | None = None
     exposure: ExposureConfig = Field(default_factory=ExposureConfig)
-    repeats: int = 3                            # k for pass@k / pass^k
+    repeats: int = 3  # k for pass@k / pass^k
     concurrency: int = 4
     base_dir: Path = Path(".")
     _secrets: set[str] = PrivateAttr(default_factory=set)
@@ -178,7 +194,7 @@ class Suite(BaseModel):
         return obj
 
     @classmethod
-    def load(cls, path: str | Path) -> "Suite":
+    def load(cls, path: str | Path) -> Suite:
         path = Path(path)
         data = yaml.safe_load(path.read_text()) or {}
         secrets: set[str] = set()

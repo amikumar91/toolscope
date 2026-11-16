@@ -17,12 +17,15 @@ def bm25():
     return BM25Retriever(SHOP_TOOLS)
 
 
-@pytest.mark.parametrize("query,best", [
-    ("order status", "shop__get_order_status"),
-    ("cancel an order", "shop__cancel_order"),
-    ("customer email lookup", "crm__find_customer_by_email"),
-    ("order total line items", "shop__get_order_details"),
-])
+@pytest.mark.parametrize(
+    "query,best",
+    [
+        ("order status", "shop__get_order_status"),
+        ("cancel an order", "shop__cancel_order"),
+        ("customer email lookup", "crm__find_customer_by_email"),
+        ("order total line items", "shop__get_order_details"),
+    ],
+)
 def test_ranking_sanity(bm25, query, best):
     assert bm25.search(query, 3)[0] == best
 
@@ -49,7 +52,9 @@ def test_empty_catalogue():
 
 
 def test_camel_case_tool_names_are_searchable():
-    r = BM25Retriever([spec("gh", "createPullRequest", "Open a PR"), spec("gh", "listIssues", "List issues")])
+    r = BM25Retriever(
+        [spec("gh", "createPullRequest", "Open a PR"), spec("gh", "listIssues", "List issues")]
+    )
     assert r.search("create pull request", 2)[0] == "gh__createPullRequest"
 
 

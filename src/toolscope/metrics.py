@@ -10,6 +10,7 @@ Every failed run is attributed to exactly one funnel stage (the earliest that br
     outcome       calls were fine but the final answer / end-state check failed
     crash         agent raised
 """
+
 from __future__ import annotations
 
 import importlib
@@ -61,20 +62,22 @@ class RunScore(BaseModel):
     no_tools_task: bool = False
     # discovery
     search_calls: int = 0
-    recall_at_k: float | None = None       # expected tools surfaced by search / expected tools
+    recall_at_k: float | None = None  # expected tools surfaced by search / expected tools
     reciprocal_rank: float | None = None
     skipped_search: bool = False
     hallucinated_calls: int = 0
     # selection
-    expected_recall: float | None = None   # expected tools actually called / expected tools
-    precision: float | None = None         # distinct called tools that were expected / distinct called
+    expected_recall: float | None = None  # expected tools actually called / expected tools
+    precision: float | None = None  # distinct called tools that were expected / distinct called
     wrong_tool_calls: int = 0
     forbidden_called: bool = False
     irrelevance_ok: bool | None = None
     # invocation
     real_calls: int = 0
     schema_valid_rate: float | None = None
-    arg_accuracy: float | None = None      # expected calls with a successful, arg-matching call / expected
+    arg_accuracy: float | None = (
+        None  # expected calls with a successful, arg-matching call / expected
+    )
     error_calls: int = 0
     first_call_ok: bool | None = None
     had_error: bool = False
@@ -107,11 +110,20 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
     for q in schemas:
         bare[q.split("__", 1)[-1]].append(q)
     schemas = {**{b: schemas[qs[0]] for b, qs in bare.items() if len(qs) == 1}, **schemas}
-    s = RunScore(task_id=task.id, agent_id=trace.agent_id, mode=trace.mode, repeat=trace.repeat,
-                 success=False, no_tools_task=exp.no_tools, turns=trace.turns,
-                 input_tokens=trace.usage.input_tokens, output_tokens=trace.usage.output_tokens,
-                 schema_tokens=trace.usage.schema_tokens, cost_usd=trace.usage.cost_usd,
-                 latency_ms=trace.latency_ms)
+    s = RunScore(
+        task_id=task.id,
+        agent_id=trace.agent_id,
+        mode=trace.mode,
+        repeat=trace.repeat,
+        success=False,
+        no_tools_task=exp.no_tools,
+        turns=trace.turns,
+        input_tokens=trace.usage.input_tokens,
+        output_tokens=trace.usage.output_tokens,
+        schema_tokens=trace.usage.schema_tokens,
+        cost_usd=trace.usage.cost_usd,
+        latency_ms=trace.latency_ms,
+    )
 
     # ---- discovery ---------------------------------------------------------------------------
     s.search_calls = len(trace.searches)
@@ -119,7 +131,9 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
     surfaced: set[str] = {r for ev in trace.searches for r in ev.results}
     if trace.mode == "search" and exp.tools:
         first_search_turn = min((ev.turn for ev in trace.searches), default=10**9)
-        s.skipped_search = any(c.turn < first_search_turn for c in real) if trace.searches else bool(real)
+        s.skipped_search = (
+            any(c.turn < first_search_turn for c in real) if trace.searches else bool(real)
+        )
         hits = [e for e in exp.tools if any(name_matches(e.name, r) for r in surfaced)]
         s.recall_at_k = len(hits) / len(exp.tools)
         rr = 0.0
@@ -141,7 +155,9 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
         if called:
             good = {c for c in called if any(name_matches(e.name, c) for e in exp.tools)}
             s.precision = len(good) / len(called)
-        s.wrong_tool_calls = sum(1 for c in real if c.known and not any(name_matches(e.name, c.name) for e in exp.tools))
+        s.wrong_tool_calls = sum(
+            1 for c in real if c.known and not any(name_matches(e.name, c.name) for e in exp.tools)
+        )
     if exp.no_tools:
         s.irrelevance_ok = not real
 
@@ -165,10 +181,13 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
         s.schema_valid_rate = valid / len(known) if known else None
         first_err = next((i for i, c in enumerate(real) if not c.ok), None)
         if first_err is not None:
-            s.recovered = any(c.ok for c in real[first_err + 1:])
+            s.recovered = any(c.ok for c in real[first_err + 1 :])
     if exp.tools:
-        matched = [e for e in exp.tools
-                   if any(name_matches(e.name, c.name) and c.ok and args_match(e, c.args) for c in real)]
+        matched = [
+            e
+            for e in exp.tools
+            if any(name_matches(e.name, c.name) and c.ok and args_match(e, c.args) for c in real)
+        ]
         s.arg_accuracy = len(matched) / len(exp.tools)
 
     # ---- orchestration ------------------------------------------------------------------------
@@ -179,9 +198,12 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
     if exp.ordered and len(exp.tools) > 1:
         idx = []
         for e in exp.tools:
-            pos = next((i for i, c in enumerate(real) if name_matches(e.name, c.name) and c.ok), None)
+            pos = next(
+                (i for i, c in enumerate(real) if name_matches(e.name, c.name) and c.ok), None
+            )
             idx.append(pos)
-        s.order_ok = None not in idx and idx == sorted(idx)
+        found = [i for i in idx if i is not None]
+        s.order_ok = len(found) == len(idx) and found == sorted(found)
 
     # ---- outcome ------------------------------------------------------------------------------
     checks: list[bool] = []
@@ -212,7 +234,11 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
         if trace.mode == "search":
             unsurfaced = [e for e in missing if not any(name_matches(e.name, r) for r in surfaced)]
             if unsurfaced:
-                why = "never searched" if not trace.searches else f"search never surfaced {unsurfaced[0].name}"
+                why = (
+                    "never searched"
+                    if not trace.searches
+                    else f"search never surfaced {unsurfaced[0].name}"
+                )
                 return fail("discovery", why)
         if missing and s.hallucinated_calls and trace.mode != "search":
             return fail("discovery", "called non-existent tool names")
@@ -246,7 +272,7 @@ class GroupStats(BaseModel):
     recall_at_k: float | None = None
     mrr: float | None = None
     skipped_search_rate: float | None = None
-    hallucination_rate: float = 0.0          # runs with >=1 non-existent tool name
+    hallucination_rate: float = 0.0  # runs with >=1 non-existent tool name
     selection_accuracy: float | None = None  # mean expected_recall on tool tasks
     precision: float | None = None
     irrelevance_accuracy: float | None = None
@@ -286,31 +312,41 @@ def aggregate(scores: list[RunScore]) -> list[GroupStats]:
         errs = [r for r in rs if r.had_error]
         tokens = sum(r.input_tokens + r.output_tokens for r in rs)
         costs = [r.cost_usd for r in rs if r.cost_usd is not None]
-        out.append(GroupStats(
-            agent_id=agent, mode=mode, runs=len(rs), tasks=len(by_task), k=k,
-            pass_at_1=_mean([r.success for r in rs]) or 0.0,
-            pass_at_k=_mean([any(x.success for x in v) for v in by_task.values()]) or 0.0,
-            pass_hat_k=_mean([all(x.success for x in v) for v in by_task.values()]) or 0.0,
-            funnel={st: sum(1 for r in rs if r.failure_stage == st) for st in STAGES},
-            recall_at_k=_mean([r.recall_at_k for r in rs]),
-            mrr=_mean([r.reciprocal_rank for r in rs]),
-            skipped_search_rate=_mean([r.skipped_search for r in tool_runs]) if mode == "search" else None,
-            hallucination_rate=_mean([r.hallucinated_calls > 0 for r in rs]) or 0.0,
-            selection_accuracy=_mean([r.expected_recall for r in tool_runs]),
-            precision=_mean([r.precision for r in tool_runs]),
-            irrelevance_accuracy=_mean([r.irrelevance_ok for r in rs if r.no_tools_task]),
-            schema_valid_rate=_mean([r.schema_valid_rate for r in rs]),
-            arg_accuracy=_mean([r.arg_accuracy for r in tool_runs]),
-            call_error_rate=(sum(r.error_calls for r in rs) / total_calls) if total_calls else None,
-            first_call_ok_rate=_mean([r.first_call_ok for r in rs]),
-            recovery_rate=_mean([r.recovered for r in errs]),
-            avg_calls=_mean([r.real_calls for r in rs]) or 0.0,
-            redundant_per_run=_mean([r.redundant_calls for r in rs]) or 0.0,
-            over_budget_rate=_mean([r.over_budget for r in rs]) or 0.0,
-            avg_input_tokens=_mean([r.input_tokens for r in rs]) or 0.0,
-            avg_schema_tokens=_mean([r.schema_tokens for r in rs]) or 0.0,
-            tokens_per_success=(tokens / len(succ)) if succ and tokens else None,
-            cost_per_success=(sum(costs) / len(succ)) if succ and costs else None,
-            p50_latency_ms=statistics.median([r.latency_ms for r in rs]) if rs else 0.0,
-        ))
+        out.append(
+            GroupStats(
+                agent_id=agent,
+                mode=mode,
+                runs=len(rs),
+                tasks=len(by_task),
+                k=k,
+                pass_at_1=_mean([r.success for r in rs]) or 0.0,
+                pass_at_k=_mean([any(x.success for x in v) for v in by_task.values()]) or 0.0,
+                pass_hat_k=_mean([all(x.success for x in v) for v in by_task.values()]) or 0.0,
+                funnel={st: sum(1 for r in rs if r.failure_stage == st) for st in STAGES},
+                recall_at_k=_mean([r.recall_at_k for r in rs]),
+                mrr=_mean([r.reciprocal_rank for r in rs]),
+                skipped_search_rate=_mean([r.skipped_search for r in tool_runs])
+                if mode == "search"
+                else None,
+                hallucination_rate=_mean([r.hallucinated_calls > 0 for r in rs]) or 0.0,
+                selection_accuracy=_mean([r.expected_recall for r in tool_runs]),
+                precision=_mean([r.precision for r in tool_runs]),
+                irrelevance_accuracy=_mean([r.irrelevance_ok for r in rs if r.no_tools_task]),
+                schema_valid_rate=_mean([r.schema_valid_rate for r in rs]),
+                arg_accuracy=_mean([r.arg_accuracy for r in tool_runs]),
+                call_error_rate=(sum(r.error_calls for r in rs) / total_calls)
+                if total_calls
+                else None,
+                first_call_ok_rate=_mean([r.first_call_ok for r in rs]),
+                recovery_rate=_mean([r.recovered for r in errs]),
+                avg_calls=_mean([r.real_calls for r in rs]) or 0.0,
+                redundant_per_run=_mean([r.redundant_calls for r in rs]) or 0.0,
+                over_budget_rate=_mean([r.over_budget for r in rs]) or 0.0,
+                avg_input_tokens=_mean([r.input_tokens for r in rs]) or 0.0,
+                avg_schema_tokens=_mean([r.schema_tokens for r in rs]) or 0.0,
+                tokens_per_success=(tokens / len(succ)) if succ and tokens else None,
+                cost_per_success=(sum(costs) / len(succ)) if succ and costs else None,
+                p50_latency_ms=statistics.median([r.latency_ms for r in rs]) if rs else 0.0,
+            )
+        )
     return sorted(out, key=lambda g: (-g.pass_at_1, g.agent_id, g.mode))
