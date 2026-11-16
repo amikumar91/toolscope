@@ -6,6 +6,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
 from .config import Suite
@@ -50,7 +51,10 @@ def run(
         bar = prog.add_task("running", total=total)
         result = asyncio.run(
             run_suite(
-                suite, on_progress=lambda s: prog.advance(bar), server_log=str(out / "servers.log")
+                suite,
+                on_progress=lambda s: prog.advance(bar),
+                server_log=str(out / "servers.log"),
+                out_dir=out,
             )
         )
     result = result.redacted()
@@ -69,6 +73,13 @@ def run(
     console.print(
         f"\n[dim]wrote {path}/report.html, summary.json, scores.jsonl, traces.jsonl, servers.log[/dim]"
     )
+    failed = False
+    for agent_id, err in result.config_errors.items():
+        console.print(
+            f"[red]CONFIG ERROR: agent {agent_id!r} could not be built, "
+            f"all its runs recorded as crash: {escape(err)}[/red]"
+        )
+        failed = True
     if fail_under is not None:
         bad = [g for g in result.stats if g.pass_hat_k < fail_under]
         if bad:
@@ -76,7 +87,9 @@ def run(
                 f"[red]FAIL: {', '.join(f'{g.agent_id}/{g.mode} pass^k={g.pass_hat_k:.0%}' for g in bad)} "
                 f"< {fail_under:.0%}[/red]"
             )
-            raise typer.Exit(1)
+            failed = True
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()
