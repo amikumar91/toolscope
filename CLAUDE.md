@@ -23,6 +23,19 @@ toolscope report results             # re-render report from scores.jsonl
 
 `test_demo_suite_end_to_end` spawns the demo stdio servers (`examples/demo/servers.py`) and asserts `tool_count == 10` and 100% pass for `mock/good` in both modes — changing demo tools, tasks or `MockLLM` heuristics will affect it.
 
+## Workflow for roadmap issues
+
+Work is tracked as GitHub issues (pinned Roadmap: #27; milestones v0.2 → v0.4). One issue per branch and per PR.
+
+1. **Start**: `git checkout main && git pull`, read the issue (`gh issue view <N>`), and check its "Depends on" section. If a dependency is still open, say so before starting. Then claim it: `gh issue edit <N> --add-assignee amikumar91` and `gh issue comment <N> --body "Working on this."`.
+2. **Branch**: `<type>/<N>-<short-slug>` from `main`, e.g. `fix/2-env-interpolation`, `feat/9-per-tool-stats`, `chore/1-ci`. Never commit directly to `main`.
+3. **Commits**: Conventional Commits, `<type>(<scope>): <summary>` (types: feat, fix, test, docs, refactor, chore, ci; scope = module, e.g. `metrics`, `config`). Reference the issue in the body (`Refs #N`). Commits are authored by the repo owner only: **never add a `Co-Authored-By` trailer or any Claude/AI attribution** to commits or PR descriptions.
+4. **Before pushing, all must pass**: `pytest`, then the offline demo from `examples/demo` (`toolscope run suite.yaml -a mock-good -k 2 --fail-under 1.0 -o %TEMP%/ts-results`). Once #1 lands, also `ruff check . && ruff format --check . && mypy src`. Add or update tests for every behaviour change, and tick the issue's acceptance criteria.
+5. **Docs**: update README.md (user-facing behaviour, YAML keys, CLI flags), and this file if architecture or invariants change. Keep output schemas (`summary.json`, `scores.jsonl`, `tool_stats.json`) backward compatible, or bump their version field.
+6. **PR**: `gh pr create --base main` with title in commit format, body containing a summary, test evidence, and `Closes #N`. Don't merge. Leave merging to the owner unless asked.
+   **After merge**: confirm the issue closed (`gh issue view <N> --json state`); if `Closes #N` didn't close it, run `gh issue close <N> --reason completed --comment "Fixed in #<PR>"`. Then `git checkout main && git pull`.
+7. Don't expand scope beyond the issue. Note follow-ups as new issues (ask first) instead of folding them in.
+
 ## Architecture
 
 Data flow: `Suite.load` (config.py) → `run_suite` (runner.py) opens one `MCPPool` for the whole run → for each job, either `run_builtin` (kind `litellm`/`mock`) or `run_custom` (kind `python`) in agent.py produces a `Trace` → `metrics.score(trace, task, schemas)` → `RunScore` → `aggregate` → `GroupStats` per (agent, mode) → report.py.

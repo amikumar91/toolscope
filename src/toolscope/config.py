@@ -1,11 +1,67 @@
 """Suite configuration: which MCP servers, which models/agents, which tasks, which exposure modes."""
 from __future__ import annotations
 
+import html
+import json
+import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
+
+# `$$` -> literal `$`; `${VAR}` / `${VAR:-default}` -> environment value. A bare `$VAR` is left alone.
+_VAR_RE = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_SERVER_INTERP_KEYS = ("env", "headers", "url", "command", "args")
+_SECRET_KEYS = ("env", "headers")   # values expanded here are scrubbed from every output file
+_MIN_SECRET_LEN = 4                 # don't scrub trivially short values, they'd mangle unrelated text
+REDACTED = "***"
+
+
+def interpolate(value: Any, owner: str, secrets: set[str] | None = None) -> Any:
+    """Expand `${VAR}` / `${VAR:-default}` and `$$` in every string inside `value` (recursing into dicts/lists).
+
+    `owner` (e.g. "server 'github'") prefixes the error for an unset variable without a default. Expanded
+    values are added to `secrets` when given, so callers can scrub them from outputs.
+    """
+    if isinstance(value, dict):
+        return {k: interpolate(v, owner, secrets) for k, v in value.items()}
+    if isinstance(value, list):
+        return [interpolate(v, owner, secrets) for v in value]
+    if not isinstance(value, str):
+        return value
+
+    def sub(m: re.Match[str]) -> str:
+        if m.group(0) == "$$":
+            return "$"
+        name, default = m.group(1), m.group(2)
+        env = os.environ.get(name)
+        if env:
+            if secrets is not None and len(env) >= _MIN_SECRET_LEN:
+                secrets.add(env)
+            return env
+        if default is not None:
+            return default
+        if env is None:
+            raise ValueError(f"{owner}: env var {name} is not set")
+        return ""  # set but empty, no default
+
+    return _VAR_RE.sub(sub, value)
+
+
+def _interpolate_suite(data: dict[str, Any], secrets: set[str]) -> None:
+    """Expand env vars in server connection settings and agent params, in place. Tasks are never touched."""
+    for srv in data.get("servers") or []:
+        if not isinstance(srv, dict):
+            continue
+        owner = f"server '{srv.get('name', '?')}'"
+        for key in _SERVER_INTERP_KEYS:
+            if key in srv:
+                srv[key] = interpolate(srv[key], owner, secrets if key in _SECRET_KEYS else None)
+    for agent in data.get("agents") or []:
+        if isinstance(agent, dict) and "params" in agent:
+            agent["params"] = interpolate(agent["params"], f"agent '{agent.get('id', '?')}'", secrets)
 
 
 class ServerConfig(BaseModel):
@@ -94,13 +150,26 @@ class Suite(BaseModel):
     repeats: int = 3                            # k for pass@k / pass^k
     concurrency: int = 4
     base_dir: Path = Path(".")
+    _secrets: set[str] = PrivateAttr(default_factory=set)
+
+    def redact(self, text: str) -> str:
+        """Replace every env-var value expanded into server env/headers or agent params with `***`."""
+        # also the JSON- and HTML-escaped spellings, since that's how they appear in the output files
+        forms = {f for s in self._secrets for f in (s, json.dumps(s)[1:-1], html.escape(s))}
+        for s in sorted(forms, key=len, reverse=True):
+            text = text.replace(s, REDACTED)
+        return text
 
     @classmethod
     def load(cls, path: str | Path) -> "Suite":
         path = Path(path)
         data = yaml.safe_load(path.read_text()) or {}
+        secrets: set[str] = set()
+        if isinstance(data, dict):
+            _interpolate_suite(data, secrets)
         data["base_dir"] = path.parent.resolve()
         suite = cls.model_validate(data)
+        suite._secrets = secrets
         if suite.tasks_file:
             tpath = (suite.base_dir / suite.tasks_file).resolve()
             raw = yaml.safe_load(tpath.read_text()) or []
