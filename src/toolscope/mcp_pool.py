@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable, Iterator
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass
-from typing import IO, Any, Callable, Iterator
+from typing import IO, Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -128,7 +129,7 @@ class MCPPool:
             prefix="toolscope-servers-", suffix=".log"
         )
 
-    async def __aenter__(self) -> "MCPPool":
+    async def __aenter__(self) -> MCPPool:
         for cfg in self.servers:
             if cfg.transport == "stdio":
                 params = StdioServerParameters(
@@ -137,7 +138,7 @@ class MCPPool:
                 errlog = self._stack.enter_context(
                     _redacting_errlog(self.errlog_path, self.redact)
                     if self.redact
-                    else open(self.errlog_path, "a")
+                    else open(self.errlog_path, "a")  # noqa: SIM115 - closed by the exit stack
                 )
                 read, write = await self._stack.enter_async_context(
                     stdio_client(params, errlog=errlog)

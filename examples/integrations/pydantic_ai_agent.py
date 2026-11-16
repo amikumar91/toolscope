@@ -13,8 +13,8 @@ verified end to end with pydantic-ai's offline TestModel (params: {model: test})
 
 import json
 
-from pydantic_ai import Agent, capture_run_messages
 from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
+from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelRequest,

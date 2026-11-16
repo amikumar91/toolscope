@@ -19,7 +19,8 @@ import inspect
 import json
 import sys
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .config import AgentConfig, Task
 from .llm import LLM

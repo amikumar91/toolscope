@@ -134,8 +134,8 @@ tasks:
     for f in out.iterdir():
         assert secret not in f.read_text(encoding="utf-8"), f.name
     for f in ("scores.jsonl", "traces.jsonl"):
-        lines = [l for l in (out / f).read_text(encoding="utf-8").splitlines() if l]
-        assert lines and all(json.loads(l) for l in lines), f
+        lines = [ln for ln in (out / f).read_text(encoding="utf-8").splitlines() if ln]
+        assert lines and all(json.loads(ln) for ln in lines), f
     assert json.loads((out / "summary.json").read_text())["groups"][0]["runs"] == 1
     r = runner.invoke(app, ["report", str(out)])
     assert r.exit_code == 0, r.output

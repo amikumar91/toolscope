@@ -67,7 +67,7 @@ class Trace(BaseModel):
         agent_id: str = "external",
         exposed_tools: list[str] | None = None,
         repeat: int = 0,
-    ) -> "Trace":
+    ) -> Trace:
         """Build a Trace from an OpenAI-style chat history (role/tool_calls/tool messages).
 
         LangChain (`convert_to_openai_messages`), pydantic-ai, OpenAI Agents SDK, LiteLLM and most custom

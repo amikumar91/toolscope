@@ -89,7 +89,7 @@ class ServerConfig(BaseModel):
     headers: dict[str, str] | None = None
 
     @model_validator(mode="after")
-    def _check(self) -> "ServerConfig":
+    def _check(self) -> ServerConfig:
         if self.transport == "stdio" and not self.command:
             raise ValueError(f"server '{self.name}': stdio transport needs `command`")
         if self.transport == "http" and not self.url:
@@ -194,7 +194,7 @@ class Suite(BaseModel):
         return obj
 
     @classmethod
-    def load(cls, path: str | Path) -> "Suite":
+    def load(cls, path: str | Path) -> Suite:
         path = Path(path)
         data = yaml.safe_load(path.read_text()) or {}
         secrets: set[str] = set()

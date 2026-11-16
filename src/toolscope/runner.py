@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from pydantic import BaseModel
 
@@ -30,7 +31,7 @@ class RunResult:
     tool_count: int
     catalogue_tokens: int
 
-    def redacted(self) -> "RunResult":
+    def redacted(self) -> RunResult:
         """A copy with suite secrets scrubbed from every string field (structurally, so JSON stays valid)."""
         r = self.suite.redact_obj
 
@@ -125,7 +126,10 @@ async def run_suite(
             for t in suite.tasks
         )
     }
-    key = lambda x: (order.get((x.agent_id, x.mode, x.task_id), 0), x.repeat)
+
+    def key(x: Trace | RunScore) -> tuple[int, int]:
+        return (order.get((x.agent_id, x.mode, x.task_id), 0), x.repeat)
+
     traces.sort(key=key)
     scores.sort(key=key)
     return RunResult(suite, traces, scores, aggregate(scores), tool_count, catalogue_tokens)

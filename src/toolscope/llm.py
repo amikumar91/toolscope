@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -71,10 +72,8 @@ class LiteLLMClient:
         ]
         usage = getattr(resp, "usage", None)
         cost = None
-        try:
+        with contextlib.suppress(Exception):
             cost = litellm.completion_cost(completion_response=resp)
-        except Exception:
-            pass
         return LLMResponse(
             msg.content,
             calls,
@@ -86,8 +85,42 @@ class LiteLLMClient:
 
 # ---------------------------------------------------------------------------------------------------
 _STOP = set(
-    "a an the of for to and or in on at is are be my me i please can you with what whats which "
-    "it this that from by do does show tell get".split()
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "for",
+        "to",
+        "and",
+        "or",
+        "in",
+        "on",
+        "at",
+        "is",
+        "are",
+        "be",
+        "my",
+        "me",
+        "i",
+        "please",
+        "can",
+        "you",
+        "with",
+        "what",
+        "whats",
+        "which",
+        "it",
+        "this",
+        "that",
+        "from",
+        "by",
+        "do",
+        "does",
+        "show",
+        "tell",
+        "get",
+    ]
 )
 _ID = re.compile(r"\b[A-Z]{2,}-\d+\b")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")

@@ -83,9 +83,9 @@ def run(
 def report(results_dir: Path = typer.Argument(Path("toolscope-results"))):
     """Re-render the report from saved scores.jsonl."""
     scores = [
-        RunScore.model_validate_json(l)
-        for l in (results_dir / "scores.jsonl").read_text(encoding="utf-8").splitlines()
-        if l
+        RunScore.model_validate_json(line)
+        for line in (results_dir / "scores.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
     ]
     summary = json.loads((results_dir / "summary.json").read_text(encoding="utf-8"))
     stats: list[GroupStats] = aggregate(scores)
