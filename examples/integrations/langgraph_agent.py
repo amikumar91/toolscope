@@ -10,6 +10,7 @@
 Your agent keeps its own MCP client; toolscope only needs the message history back.
 Verified end to end with a scripted chat model against the demo servers.
 """
+
 from langchain_core.messages import convert_to_openai_messages
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -23,7 +24,13 @@ from toolscope import AgentContext
 
 def _connection(s, cwd):
     if s.transport == "stdio":
-        return {"transport": "stdio", "command": s.command, "args": s.args, "env": s.env, "cwd": cwd}
+        return {
+            "transport": "stdio",
+            "command": s.command,
+            "args": s.args,
+            "env": s.env,
+            "cwd": cwd,
+        }
     return {"transport": "streamable_http", "url": s.url, "headers": s.headers or {}}
 
 

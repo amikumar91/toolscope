@@ -6,6 +6,7 @@ for later turns. BM25 over name + description + parameter names, no extra deps.
 
 Swap in your own retriever (embeddings, hybrid) by passing any object with `.search(query, k) -> list[str]`.
 """
+
 from __future__ import annotations
 
 import math
@@ -51,7 +52,12 @@ class BM25Retriever:
             for tok in q:
                 if tok in tf:
                     f = tf[tok]
-                    s += self.idf.get(tok, 0) * f * (self.k1 + 1) / (f + self.k1 * (1 - self.b + self.b * dl / self.avgdl))
+                    s += (
+                        self.idf.get(tok, 0)
+                        * f
+                        * (self.k1 + 1)
+                        / (f + self.k1 * (1 - self.b + self.b * dl / self.avgdl))
+                    )
             scores.append((s, i))
         scores.sort(key=lambda x: -x[0])
         return [self.ids[i] for s, i in scores[:k] if s > 0]
@@ -68,7 +74,12 @@ SEARCH_TOOL_SPEC = {
         ),
         "parameters": {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "What you need to do, e.g. 'cancel an order'"}},
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What you need to do, e.g. 'cancel an order'",
+                }
+            },
             "required": ["query"],
         },
     },

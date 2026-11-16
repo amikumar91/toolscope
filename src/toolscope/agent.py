@@ -11,6 +11,7 @@
            # Option A: route tool execution through ctx.call_tool(...)  -> calls are recorded live
            # Option B: return the OpenAI-format message history          -> calls are parsed from it
 """
+
 from __future__ import annotations
 
 import importlib
@@ -35,10 +36,19 @@ def _search_result_text(specs: list[ToolSpec]) -> str:
     return "Found tools (now callable):\n" + "\n".join(lines)
 
 
-async def run_builtin(pool: MCPPool, task: Task, cfg: AgentConfig, llm: LLM, mode: str, repeat: int,
-                      top_k: int = 5, retriever: Retriever | None = None) -> Trace:
-    trace = Trace(task_id=task.id, agent_id=cfg.id, mode=mode, repeat=repeat,
-                  exposed_tools=list(pool.tools))
+async def run_builtin(
+    pool: MCPPool,
+    task: Task,
+    cfg: AgentConfig,
+    llm: LLM,
+    mode: str,
+    repeat: int,
+    top_k: int = 5,
+    retriever: Retriever | None = None,
+) -> Trace:
+    trace = Trace(
+        task_id=task.id, agent_id=cfg.id, mode=mode, repeat=repeat, exposed_tools=list(pool.tools)
+    )
     specs = pool.tools
     retriever = retriever or BM25Retriever(list(specs.values()))
     loaded: dict[str, ToolSpec] = dict(specs) if mode == "all" else {}
@@ -66,38 +76,93 @@ async def run_builtin(pool: MCPPool, task: Task, cfg: AgentConfig, llm: LLM, mod
             if not resp.tool_calls:
                 trace.final_answer = resp.content or ""
                 break
-            messages.append({"role": "assistant", "content": resp.content, "tool_calls": [
-                {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
-                for c in resp.tool_calls]})
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": resp.content,
+                    "tool_calls": [
+                        {
+                            "id": c.id,
+                            "type": "function",
+                            "function": {"name": c.name, "arguments": c.arguments},
+                        }
+                        for c in resp.tool_calls
+                    ],
+                }
+            )
             for c in resp.tool_calls:
                 try:
                     args = json.loads(c.arguments or "{}")
                     if not isinstance(args, dict):
                         raise ValueError("arguments must be an object")
                 except Exception as e:
-                    trace.calls.append(ToolCall(name=c.name, args={"__unparseable__": c.arguments}, ok=False,
-                                                error=f"bad_json: {e}", turn=turn, known=c.name in specs))
-                    messages.append({"role": "tool", "tool_call_id": c.id, "content": f"Error: invalid JSON arguments: {e}"})
+                    trace.calls.append(
+                        ToolCall(
+                            name=c.name,
+                            args={"__unparseable__": c.arguments},
+                            ok=False,
+                            error=f"bad_json: {e}",
+                            turn=turn,
+                            known=c.name in specs,
+                        )
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": c.id,
+                            "content": f"Error: invalid JSON arguments: {e}",
+                        }
+                    )
                     continue
 
                 if c.name == SEARCH_TOOL and mode == "search":
                     hits = retriever.search(str(args.get("query", "")), top_k)
-                    trace.searches.append(SearchEvent(query=str(args.get("query", "")), results=hits, turn=turn))
+                    trace.searches.append(
+                        SearchEvent(query=str(args.get("query", "")), results=hits, turn=turn)
+                    )
                     for h in hits:
                         loaded[h] = specs[h]
                     trace.calls.append(ToolCall(name=SEARCH_TOOL, args=args, turn=turn))
                     content = _search_result_text([specs[h] for h in hits])
                 elif c.name not in loaded:
                     reason = "not_loaded" if c.name in specs else "unknown_tool"
-                    trace.calls.append(ToolCall(name=c.name, args=args, ok=False, error=reason, turn=turn,
-                                                known=c.name in specs))
-                    content = (f"Error: tool '{c.name}' is not loaded; use {SEARCH_TOOL} first"
-                               if reason == "not_loaded" else f"Error: unknown tool '{c.name}'")
+                    trace.calls.append(
+                        ToolCall(
+                            name=c.name,
+                            args=args,
+                            ok=False,
+                            error=reason,
+                            turn=turn,
+                            known=c.name in specs,
+                        )
+                    )
+                    content = (
+                        f"Error: tool '{c.name}' is not loaded; use {SEARCH_TOOL} first"
+                        if reason == "not_loaded"
+                        else f"Error: unknown tool '{c.name}'"
+                    )
                 else:
                     out = await pool.call(c.name, args)
-                    trace.calls.append(ToolCall(name=c.name, args=args, ok=out.ok, error=out.error,
-                                                result_preview=out.text[:300], latency_ms=out.latency_ms, turn=turn))
-                    content = out.text if out.ok else (out.text if out.text.lower().startswith("error") else f"Error: {out.text}")
+                    trace.calls.append(
+                        ToolCall(
+                            name=c.name,
+                            args=args,
+                            ok=out.ok,
+                            error=out.error,
+                            result_preview=out.text[:300],
+                            latency_ms=out.latency_ms,
+                            turn=turn,
+                        )
+                    )
+                    content = (
+                        out.text
+                        if out.ok
+                        else (
+                            out.text
+                            if out.text.lower().startswith("error")
+                            else f"Error: {out.text}"
+                        )
+                    )
                 messages.append({"role": "tool", "tool_call_id": c.id, "content": content})
         else:
             trace.error = "max_turns"
@@ -111,8 +176,16 @@ async def run_builtin(pool: MCPPool, task: Task, cfg: AgentConfig, llm: LLM, mod
 class AgentContext:
     """Handed to your agent. Everything routed through it lands in the trace."""
 
-    def __init__(self, pool: MCPPool, trace: Trace, mode: str, task: Task, params: dict, top_k: int,
-                 retriever: Retriever):
+    def __init__(
+        self,
+        pool: MCPPool,
+        trace: Trace,
+        mode: str,
+        task: Task,
+        params: dict,
+        top_k: int,
+        retriever: Retriever,
+    ):
         self._pool, self._trace, self._retriever, self._top_k = pool, trace, retriever, top_k
         self.mode, self.task, self.params = mode, task, params
         self.system = task.system
@@ -147,13 +220,26 @@ class AgentContext:
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> str:
         out = await self._pool.call(name, args)
-        self._trace.calls.append(ToolCall(name=name, args=args, ok=out.ok, error=out.error,
-                                          result_preview=out.text[:300], latency_ms=out.latency_ms,
-                                          known=name in self._pool.tools))
+        self._trace.calls.append(
+            ToolCall(
+                name=name,
+                args=args,
+                ok=out.ok,
+                error=out.error,
+                result_preview=out.text[:300],
+                latency_ms=out.latency_ms,
+                known=name in self._pool.tools,
+            )
+        )
         return out.text
 
-    def record_usage(self, input_tokens: int = 0, output_tokens: int = 0, schema_tokens: int = 0,
-                     cost_usd: float | None = None) -> None:
+    def record_usage(
+        self,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        schema_tokens: int = 0,
+        cost_usd: float | None = None,
+    ) -> None:
         u = self._trace.usage
         u.input_tokens += input_tokens
         u.output_tokens += output_tokens
@@ -182,9 +268,19 @@ def load_ref(ref: str, base_dir: str | None = None) -> AgentFn:
     return fn
 
 
-async def run_custom(pool: MCPPool, task: Task, cfg: AgentConfig, fn: AgentFn, mode: str, repeat: int,
-                     top_k: int = 5, retriever: Retriever | None = None) -> Trace:
-    trace = Trace(task_id=task.id, agent_id=cfg.id, mode=mode, repeat=repeat, exposed_tools=list(pool.tools))
+async def run_custom(
+    pool: MCPPool,
+    task: Task,
+    cfg: AgentConfig,
+    fn: AgentFn,
+    mode: str,
+    repeat: int,
+    top_k: int = 5,
+    retriever: Retriever | None = None,
+) -> Trace:
+    trace = Trace(
+        task_id=task.id, agent_id=cfg.id, mode=mode, repeat=repeat, exposed_tools=list(pool.tools)
+    )
     retriever = retriever or BM25Retriever(list(pool.tools.values()))
     ctx = AgentContext(pool, trace, mode, task, {**cfg.params, "repeat": repeat}, top_k, retriever)
     t0 = time.perf_counter()
@@ -197,8 +293,9 @@ async def run_custom(pool: MCPPool, task: Task, cfg: AgentConfig, fn: AgentFn, m
             c = e.cause
             trace.error = f"{type(c).__name__}: {c}" if isinstance(c, BaseException) else str(c)
         if isinstance(out, list):  # OpenAI-format history
-            parsed = Trace.from_openai_messages(out, task_id=task.id, agent_id=cfg.id,
-                                                exposed_tools=list(pool.tools), repeat=repeat)
+            parsed = Trace.from_openai_messages(
+                out, task_id=task.id, agent_id=cfg.id, exposed_tools=list(pool.tools), repeat=repeat
+            )
             if not trace.calls:
                 trace.calls = parsed.calls
             trace.final_answer, trace.turns = parsed.final_answer, parsed.turns

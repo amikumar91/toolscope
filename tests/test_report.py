@@ -8,8 +8,16 @@ from toolscope.report import print_console, render_html
 
 
 def rs(agent, mode, task, rep, ok, stage=None, **kw):
-    return RunScore(task_id=task, agent_id=agent, mode=mode, repeat=rep, success=ok, failure_stage=stage,
-                    failure_reason="why" if stage else "", **kw)
+    return RunScore(
+        task_id=task,
+        agent_id=agent,
+        mode=mode,
+        repeat=rep,
+        success=ok,
+        failure_stage=stage,
+        failure_reason="why" if stage else "",
+        **kw,
+    )
 
 
 SCORES = [
@@ -50,7 +58,9 @@ def test_html_empty_stats():
 
 def test_html_best_group_without_failures():
     stats = aggregate(SCORES[:2])
-    assert "every run passed" in render_html(stats, SCORES[:2], suite_name="s", tool_count=1, catalogue_tokens=1)
+    assert "every run passed" in render_html(
+        stats, SCORES[:2], suite_name="s", tool_count=1, catalogue_tokens=1
+    )
 
 
 def test_console_output():

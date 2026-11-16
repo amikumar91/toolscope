@@ -1,4 +1,5 @@
 """Token estimates for schema cost. Uses tiktoken (cl100k) when installed, else chars/4."""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ from typing import Any
 def _enc():
     try:
         import tiktoken
+
         return tiktoken.get_encoding("cl100k_base")
     except Exception:
         return None

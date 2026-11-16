@@ -1,4 +1,5 @@
 """End-to-end over `transport: http` against a local streamable-HTTP server (no network beyond loopback)."""
+
 import socket
 import subprocess
 import sys
@@ -19,8 +20,11 @@ def _free_port() -> int:
 @pytest.fixture(scope="module")
 def http_url():
     port = _free_port()
-    proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name("http_server.py")), str(port)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        [sys.executable, str(Path(__file__).with_name("http_server.py")), str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     deadline = time.time() + 20
     while time.time() < deadline:
         if proc.poll() is not None:
