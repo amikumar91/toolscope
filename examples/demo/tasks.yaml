@@ -1,0 +1,69 @@
+# Each task: a prompt, the tool calls a correct agent makes, and how to check the outcome.
+# Tool names can be bare ("get_order_status") or qualified ("shop__get_order_status").
+# Arg values: exact (case-insensitive), numbers compared numerically, or "re:<regex>".
+
+- id: order-status
+  prompt: "What's the shipping status of order ORD-1042?"
+  expect:
+    tools: [{name: get_order_status, args: {order_id: ORD-1042}}]
+    answer_contains: [shipped]
+  forbid: [cancel_order]
+  tags: [single, decoy]
+
+- id: order-total
+  prompt: "How much was the total amount on order ORD-2001?"
+  expect:
+    tools: [{name: get_order_details, args: {order_id: ORD-2001}}]
+    answer_contains: ["15999"]
+  tags: [single, decoy]
+
+- id: track-parcel
+  prompt: "Track parcel with tracking number BD778812"
+  expect:
+    tools: [{name: track_shipment, args: {tracking_number: BD778812}}]
+    answer_contains: [out for delivery]
+  tags: [single]
+
+- id: lookup-by-email
+  prompt: "Find the customer whose email is priya@example.com"
+  expect:
+    tools: [{name: find_customer_by_email, args: {email: priya@example.com}}]
+    answer_contains: [CUS-7]
+  tags: [single, cross-server]
+
+- id: cancel-processing
+  prompt: "Cancel order ORD-1043 because the customer said 'ordered by mistake'"
+  expect:
+    tools: [{name: cancel_order, args: {order_id: ORD-1043, reason: "re:mistake"}}]
+    answer_contains: [cancelled]
+  tags: [write]
+
+- id: refund
+  prompt: "Issue a refund of 500 on order ORD-2001"
+  expect:
+    tools: [{name: issue_refund, args: {order_id: ORD-2001, amount: 500}}]
+    answer_contains: [refund]
+  forbid: [cancel_order]
+  tags: [write]
+
+- id: ticket-high
+  prompt: "Open a high priority support ticket for customer CUS-9 with subject 'damaged screen'"
+  expect:
+    tools: [{name: create_ticket, args: {customer_id: CUS-9, priority: high}}]
+    answer_contains: [TCK-501]
+  tags: [write, enum]
+
+- id: customer-then-orders
+  prompt: "Look up customer by email arjun@example.com and then list orders for customer CUS-9"
+  expect:
+    tools:
+      - {name: find_customer_by_email, args: {email: arjun@example.com}}
+      - {name: list_orders, args: {customer_id: CUS-9}}
+    ordered: true
+    answer_contains: [ORD-2001]
+  tags: [multi-step, cross-server]
+
+- id: no-tool-needed
+  prompt: "Write a one-line greeting for a newsletter"
+  expect: {no_tools: true}
+  tags: [irrelevance]

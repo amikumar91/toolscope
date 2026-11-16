@@ -1,0 +1,24 @@
+name: demo-shop-crm
+servers:
+  - {name: shop, transport: stdio, command: python, args: [servers.py, shop]}
+  - {name: crm,  transport: stdio, command: python, args: [servers.py, crm]}
+  # - {name: github, transport: http, url: "https://api.githubcopilot.com/mcp/", headers: {Authorization: "Bearer ${GITHUB_TOKEN}"}}
+
+agents:
+  # Offline models so the demo runs anywhere (CI too).
+  - {id: mock-good,   kind: mock, model: mock/good}
+  - {id: mock-sloppy, kind: mock, model: mock/sloppy}
+  # Real models via LiteLLM (pip install toolscope[litellm]; set the provider's API key env var):
+  # - {id: sonnet,  kind: litellm, model: anthropic/claude-sonnet-4-5, temperature: 0.7}
+  # - {id: gpt,     kind: litellm, model: openai/gpt-4.1-mini, temperature: 0.7}
+  # - {id: local,   kind: litellm, model: ollama/qwen3:8b}
+  # Your own agent (pydantic-ai, LangChain, ...): see examples/integrations/
+  - {id: my-agent, kind: python, ref: "my_agent:agent", modes: [all]}
+
+exposure:
+  modes: [all, search]   # all = every schema in context; search = search_tools meta-tool + on-demand loading
+  search_top_k: 3
+
+tasks_file: tasks.yaml
+repeats: 5
+concurrency: 1          # demo tools are stateless, but write tools on real servers usually aren't
