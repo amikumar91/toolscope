@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from toolscope import Suite, Task, Trace, run_suite, score, score_messages
-from toolscope.trace import SearchEvent, ToolCall
+from toolscope.trace import SearchEvent, ToolCall, Usage
 
 SCHEMAS = {
     "shop__get_order_status": {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]},
@@ -108,3 +108,58 @@ async def test_demo_suite_end_to_end():
     search = next(g for g in res.stats if g.mode == "search")
     full = next(g for g in res.stats if g.mode == "all")
     assert search.avg_schema_tokens < full.avg_schema_tokens
+
+
+OK_CALL = ToolCall(name="shop__get_order_status", args={"order_id": "ORD-1"})
+
+
+@pytest.mark.parametrize("stage,trace", [
+    (None, tr([OK_CALL])),
+    ("discovery", tr([], mode="search")),  # never searched
+    ("discovery", tr([ToolCall(name="shop__lookup_order", args={}, known=False)])),  # hallucinated, all mode
+    ("selection", tr([ToolCall(name="shop__get_order_details", args={"order_id": "ORD-1"})])),
+    ("invocation", tr([ToolCall(name="shop__get_order_status", args={"order_id": "ORD-1"}, ok=False)])),
+    ("orchestration", tr([OK_CALL]).model_copy(update={"error": "max_turns"})),
+    ("outcome", tr([OK_CALL], answer="no idea")),
+    ("crash", tr([OK_CALL]).model_copy(update={"error": "RuntimeError: boom"})),
+])
+def test_one_failure_per_funnel_stage(stage, trace):
+    s = score(trace, TASK, SCHEMAS)
+    assert s.failure_stage == stage and s.success is (stage is None)
+
+
+def test_crash_takes_precedence_over_everything():
+    s = score(tr([], answer="", mode="search").model_copy(update={"error": "ValueError: x"}), TASK, SCHEMAS)
+    assert s.failure_stage == "crash" and s.failure_reason == "ValueError: x"
+
+
+def test_answer_regex_and_custom_check(tmp_path, monkeypatch):
+    (tmp_path / "ts_checks.py").write_text(
+        "def ok(trace, task):\n    return 'ORD' in trace.final_answer\n"
+        "def boom(trace, task):\n    raise RuntimeError\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    base = {"id": "c", "prompt": "", "expect": {"answer_regex": r"ord-\d+"}}
+    assert score(tr([], answer="see ORD-1"), Task.model_validate(base), SCHEMAS).success
+    for ref, ok in [("ts_checks:ok", True), ("ts_checks:boom", False)]:
+        t = Task.model_validate({**base, "expect": {**base["expect"], "check": ref}})
+        assert score(tr([], answer="see ORD-1"), t, SCHEMAS).success is ok
+
+
+@pytest.mark.parametrize("exp,act,ok", [
+    (5, "5.0", True), (5, "five", False), ("ORD-1", " ord-1 ", True),
+    ({"a": 1}, {"a": 1.0, "b": 2}, True), ({"a": 1}, {"b": 1}, False), ([1], [1], True), (True, "true", False),
+])
+def test_value_matching(exp, act, ok):
+    from toolscope.metrics import _val_eq
+    assert _val_eq(exp, act) is ok
+
+
+def test_aggregate_rates_and_costs():
+    from toolscope import aggregate
+    good = score(tr([OK_CALL]).model_copy(update={"usage": Usage(input_tokens=100, cost_usd=0.02)}), TASK, SCHEMAS)
+    bad = score(tr([ToolCall(name="shop__get_order_status", args={}, ok=False)], answer=""), TASK, SCHEMAS)
+    bad.repeat = 1
+    (g,) = aggregate([good, bad])
+    assert (g.pass_at_1, g.pass_at_k, g.pass_hat_k, g.k) == (0.5, 1.0, 0.0, 2)
+    assert g.call_error_rate == 0.5 and g.recovery_rate == 0.0 and g.funnel["invocation"] == 1
+    assert g.tokens_per_success == 100 and g.cost_per_success == 0.02

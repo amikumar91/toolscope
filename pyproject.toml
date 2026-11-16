@@ -25,7 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 litellm = ["litellm>=1.50"]      # any provider: anthropic/, openai/, gemini/, bedrock/, ollama/ ...
 tiktoken = ["tiktoken>=0.7"]     # exact token counts for schema cost (falls back to chars/4)
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5"]
 
 [project.urls]
 Homepage = "https://github.com/amikumar91/toolscope"
@@ -45,3 +45,10 @@ packages = ["src/toolscope"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["toolscope"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

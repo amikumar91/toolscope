@@ -11,6 +11,7 @@ toolscope evaluates whether an LLM (or a user's own agent) actually finds and us
 ```bash
 pip install -e ".[dev]"              # add ,litellm / ,tiktoken for real models / exact token counts
 pytest                               # asyncio_mode=auto; async tests need no decorator
+pytest --cov                         # coverage on src/toolscope; fails under 85% (pyproject)
 pytest tests/test_metrics.py::test_decoy_is_selection_failure   # single test
 
 # Offline demo (no API keys) — run from examples/demo so relative server paths resolve

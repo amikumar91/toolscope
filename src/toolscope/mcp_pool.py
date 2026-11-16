@@ -59,15 +59,18 @@ def _content_text(result: Any) -> str:
 async def _http_transport(stack: AsyncExitStack, cfg: ServerConfig):
     try:  # mcp 2.x
         from mcp.client.streamable_http import streamable_http_client as client
-        try:
-            import httpx
-            http = await stack.enter_async_context(httpx.AsyncClient(headers=cfg.headers or {}, timeout=60))
-            streams = await stack.enter_async_context(client(cfg.url, http_client=http))
-        except TypeError:
-            streams = await stack.enter_async_context(client(cfg.url))
     except ImportError:  # mcp 1.x
         from mcp.client.streamable_http import streamablehttp_client as client
         streams = await stack.enter_async_context(client(cfg.url, headers=cfg.headers or {}))
+        return streams[0], streams[1]
+    # mcp 2.x takes a pre-built HTTP client for headers; build it with the SDK's own helper, since the
+    # underlying library changed (httpx -> httpx2) across 2.x releases
+    try:
+        from mcp.client.streamable_http import create_mcp_http_client
+    except ImportError:
+        from mcp.shared._httpx_utils import create_mcp_http_client
+    http = await stack.enter_async_context(create_mcp_http_client(headers=cfg.headers or {}))
+    streams = await stack.enter_async_context(client(cfg.url, http_client=http))
     return streams[0], streams[1]
 
 
