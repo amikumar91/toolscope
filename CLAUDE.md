@@ -10,6 +10,7 @@ toolscope evaluates whether an LLM (or a user's own agent) actually finds and us
 
 ```bash
 pip install -e ".[dev]"              # add ,litellm / ,tiktoken for real models / exact token counts
+ruff check . && ruff format --check . && mypy src   # lint/format/type gates (config in pyproject.toml)
 pytest                               # asyncio_mode=auto; async tests need no decorator
 pytest --cov                         # coverage on src/toolscope; fails under 85% (pyproject)
 pytest tests/test_metrics.py::test_decoy_is_selection_failure   # single test
@@ -31,7 +32,7 @@ Work is tracked as GitHub issues (pinned Roadmap: #27; milestones v0.2 → v0.4)
 1. **Start**: `git checkout main && git pull`, read the issue (`gh issue view <N>`), and check its "Depends on" section. If a dependency is still open, say so before starting. Then claim it: `gh issue edit <N> --add-assignee amikumar91` and `gh issue comment <N> --body "Working on this."`.
 2. **Branch**: `<type>/<N>-<short-slug>` from `main`, e.g. `fix/2-env-interpolation`, `feat/9-per-tool-stats`, `chore/1-ci`. Never commit directly to `main`.
 3. **Commits**: Conventional Commits, `<type>(<scope>): <summary>` (types: feat, fix, test, docs, refactor, chore, ci; scope = module, e.g. `metrics`, `config`). Reference the issue in the body (`Refs #N`). Commits are authored by the repo owner only: **never add a `Co-Authored-By` trailer or any Claude/AI attribution** to commits or PR descriptions.
-4. **Before pushing, all must pass**: `pytest`, then the offline demo from `examples/demo` (`toolscope run suite.yaml -a mock-good -k 2 --fail-under 1.0 -o %TEMP%/ts-results`). Once #1 lands, also `ruff check . && ruff format --check . && mypy src`. Add or update tests for every behaviour change, and tick the issue's acceptance criteria.
+4. **Before pushing, all must pass** (the same gates CI runs, see `.github/workflows/ci.yml`): `ruff check . && ruff format --check . && mypy src && pytest`, then the offline demo from `examples/demo`: `toolscope run suite.yaml -a mock-good -k 2 --fail-under 1.0 -o results` (`results/` is gitignored; the commands work unchanged on Linux, macOS and Windows). Add or update tests for every behaviour change, and tick the issue's acceptance criteria.
 5. **Docs**: update README.md (user-facing behaviour, YAML keys, CLI flags), and this file if architecture or invariants change. Keep output schemas (`summary.json`, `scores.jsonl`, `tool_stats.json`) backward compatible, or bump their version field.
 6. **PR**: `gh pr create --base main` with title in commit format, body containing a summary, test evidence, and `Closes #N`. Don't merge. Leave merging to the owner unless asked.
    **After merge**: confirm the issue closed (`gh issue view <N> --json state`); if `Closes #N` didn't close it, run `gh issue close <N> --reason completed --comment "Fixed in #<PR>"`. Then `git checkout main && git pull`.

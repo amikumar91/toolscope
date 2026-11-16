@@ -1,5 +1,7 @@
 # toolscope
 
+[![CI](https://github.com/amikumar91/toolscope/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/amikumar91/toolscope/actions/workflows/ci.yml)
+
 **Does the model actually find and use your tools?** Plug in any MCP servers, any models (or your own agent), and a set of tasks. toolscope runs each task *k* times in each tool-exposure mode and tells you **where** tool use breaks, not just whether the task passed.
 
 ```
@@ -206,8 +208,11 @@ LLM-as-judge outcome checks · OpenTelemetry span import (score production traff
 
 ```bash
 pip install -e ".[dev]"
+ruff check . && ruff format --check . && mypy src
 pytest
 ```
+
+CI runs these on Python 3.10–3.13 against both mcp 1.x and 2.x (Linux) and on Windows and macOS, plus a gate that fails if `mock-good` drops below 100% pass^k on the offline demo. The demo's HTML report is attached to each run as the `demo-results` artifact.
 
 ## License
 

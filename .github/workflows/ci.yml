@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: test (py${{ matrix.python }}, ${{ matrix.os }}, mcp${{ matrix.mcp }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        mcp: ["<2", ">=2"]
+        # Windows and macOS run every Python against the current SDK only; the mcp 1.x
+        # compatibility axis is covered on Linux.
+        include:
+          - { os: windows-latest, python: "3.10", mcp: ">=2" }
+          - { os: windows-latest, python: "3.11", mcp: ">=2" }
+          - { os: windows-latest, python: "3.12", mcp: ">=2" }
+          - { os: windows-latest, python: "3.13", mcp: ">=2" }
+          - { os: macos-latest, python: "3.10", mcp: ">=2" }
+          - { os: macos-latest, python: "3.11", mcp: ">=2" }
+          - { os: macos-latest, python: "3.12", mcp: ">=2" }
+          - { os: macos-latest, python: "3.13", mcp: ">=2" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]" "mcp${{ matrix.mcp }}"
+      - name: Show mcp version
+        run: python -m pip show mcp
+      - name: mypy
+        run: mypy src
+      - name: pytest
+        run: pytest --cov
+
+  demo:
+    name: demo gate (mock-good must stay at 100% pass^k)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -e .
+      - name: Run offline demo suite
+        working-directory: examples/demo
+        run: toolscope run suite.yaml -a mock-good -k 2 --fail-under 1.0 -o results
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-results
+          path: examples/demo/results/
+          if-no-files-found: error
