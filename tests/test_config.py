@@ -100,5 +100,32 @@ def test_secrets_scrubbed_from_outputs(tmp_path, env):
     assert "***" in (out / "traces.jsonl").read_text()
     json.loads((out / "summary.json").read_text())  # still valid JSON
     assert s.redact(f"<td>{leak}</td>") == "<td>***</td>"
-    # non-secret expansions (args, url, command) are not scrubbed
-    assert s.redact("shop python") == "shop python"
+    # values expanded into args are secrets; `command` expansions and `:-` defaults are not
+    assert s.redact("servers.py shop") == "servers.py ***"
+    assert s.redact("python") == "python"
+
+
+def test_url_expansions_are_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("TS_URL_KEY", "url-key-123")
+    s = load(tmp_path, SUITE.replace("${GH_URL:-https://api.example.com/mcp/}",
+                                     "https://api.example.com/mcp/?key=${TS_URL_KEY}")
+             .replace("${TS_TOKEN}", "x").replace("${TS_ARG}", "shop"))
+    assert s.redact("GET https://api.example.com/mcp/?key=url-key-123") == "GET https://api.example.com/mcp/?key=***"
+
+
+def test_trivial_values_are_not_secrets(tmp_path, env):
+    env.setenv("TS_DEBUG", "true")
+    env.setenv("TS_PORT", "8080")
+    s = load(tmp_path, SUITE.replace('PRICE: "$$5"', 'PRICE: "$$5", DEBUG: "${TS_DEBUG}", PORT: "${TS_PORT}"'))
+    assert s.servers[1].env["DEBUG"] == "true" and s.servers[1].env["PORT"] == "8080"
+    assert s.redact("debug is true on port 8080") == "debug is true on port 8080"
+
+
+def test_redact_obj_only_touches_strings(tmp_path, env):
+    s = load(tmp_path)
+    s._secrets |= {"true", "8080"}   # even if such values were treated as secrets, JSON must stay valid
+    data = {"ok": True, "port": 8080, "msg": "s3cr3t-token on 8080 is true", "s3cr3t-token": [1, "true"]}
+    out = s.redact_obj(data)
+    assert out == {"ok": True, "port": 8080, "msg": "*** on *** is ***", "***": [1, "***"]}
+    json.loads(json.dumps(out))
+    assert data["msg"] == "s3cr3t-token on 8080 is true"   # input not mutated
