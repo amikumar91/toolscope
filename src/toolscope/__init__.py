@@ -2,14 +2,16 @@
 
 from .agent import AgentContext, AgentError
 from .config import AgentConfig, Expectation, ExpectedCall, ServerConfig, Suite, Task
+from .errors import InfraError
 from .metrics import GroupStats, RunScore, aggregate, score
-from .runner import RunResult, run_suite, score_messages
+from .runner import RunResult, load_results, run_suite, score_messages
 from .schema import SCHEMA_VERSION
 from .trace import Trace
 
 __all__ = [
     "AgentContext",
     "AgentError",
+    "InfraError",
     "AgentConfig",
     "ExpectedCall",
     "Expectation",
@@ -22,6 +24,7 @@ __all__ = [
     "score",
     "RunResult",
     "run_suite",
+    "load_results",
     "score_messages",
     "Trace",
     "SCHEMA_VERSION",

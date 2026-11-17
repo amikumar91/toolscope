@@ -9,7 +9,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 
-from .metrics import STAGES, GroupStats, RunScore
+from .metrics import INFRA, STAGES, GroupStats, RunScore
 
 
 def _pct(x: float | None) -> str:
@@ -37,6 +37,7 @@ def print_console(stats: list[GroupStats], console: Console | None = None) -> No
         "schema tok",
         "tok/success",
         "top failure",
+        "infra",
     ]:
         t.add_column(
             col, justify="right" if col not in ("agent", "mode", "top failure") else "left"
@@ -58,6 +59,7 @@ def print_console(stats: list[GroupStats], console: Console | None = None) -> No
             _num(g.avg_schema_tokens),
             _num(g.tokens_per_success),
             f"{top} ({fails[top]})" if fails else "—",
+            str(g.infra_errors) if g.infra_errors else "—",
         )
     c.print(t)
 
@@ -126,6 +128,11 @@ _GLOSSARY = [
     ("recovery", "Runs with an error that later got a successful call."),
     ("schema tok", "Tokens of tool schemas placed in context, summed over turns: the bloat cost."),
     ("tok/success", "All input+output tokens / successful runs."),
+    (
+        "infra",
+        "Runs where infrastructure failed (rate limit or network/auth error after retries, dead MCP "
+        "server, run timeout). Excluded from every other metric; rerun with --resume to retry them.",
+    ),
 ]
 
 
@@ -144,6 +151,7 @@ def render_html(
     e = html.escape
     best = stats[0] if stats else None
     total_runs = sum(g.runs for g in stats)
+    infra_runs = sum(g.infra_errors for g in stats)
     p = []
     p.append(
         f"<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -152,7 +160,9 @@ def render_html(
     p.append(
         f"<h1>Tool-use effectiveness · {e(suite_name)}</h1>"
         f"<p class='sub'>{tool_count} tools across the connected MCP servers · full catalogue ≈ {catalogue_tokens:,} tokens · "
-        f"{len(stats)} agent×mode groups · {total_runs} runs · generated {datetime.now():%Y-%m-%d %H:%M}</p>"
+        f"{len(stats)} agent×mode groups · {total_runs} runs"
+        + (f" · {infra_runs} infra-error runs excluded" if infra_runs else "")
+        + f" · generated {datetime.now():%Y-%m-%d %H:%M}</p>"
     )
 
     if best:
@@ -197,12 +207,12 @@ def render_html(
     # funnel table view (also the accessible alternative to the chart)
     p.append("<div class='scroll'><table><thead><tr><th>agent</th><th>mode</th><th>runs</th>")
     p += [f"<th>{e(s)}</th>" for s in _SEG]
-    p.append("</tr></thead><tbody>")
+    p.append(f"<th>{INFRA} (excluded)</th></tr></thead><tbody>")
     for g in stats:
         counts = {"passed": g.runs - sum(g.funnel.values()), **g.funnel}
         p.append(f"<tr><td>{e(g.agent_id)}</td><td>{e(g.mode)}</td><td>{g.runs}</td>")
         p += [f"<td>{counts.get(s, 0) or '<span class=muted>0</span>'}</td>" for s in _SEG]
-        p.append("</tr>")
+        p.append(f"<td>{g.infra_errors or '<span class=muted>0</span>'}</td></tr>")
     p.append("</tbody></table></div>")
 
     # ---- leaderboard -------------------------------------------------------------------------
@@ -231,6 +241,8 @@ def render_html(
             lambda g: "—" if g.cost_per_success is None else f"${g.cost_per_success:.4f}",
         ),
         ("p50 ms", lambda g: _num(g.p50_latency_ms)),
+        ("retries", lambda g: _num(g.retries)),
+        ("infra", lambda g: _num(g.infra_errors)),
     ]
     p.append(
         "<h2>All metrics by agent and exposure mode</h2><div class='scroll'><table><thead><tr><th>agent</th><th>mode</th>"
@@ -249,8 +261,12 @@ def render_html(
     groups = [(g.agent_id, g.mode) for g in stats]
     cells: dict[tuple[str, str, str], list[RunScore]] = defaultdict(list)
     task_ids: list[str] = []
+    infra_cells: Counter[tuple[str, str, str]] = Counter()
     for s in scores:
-        cells[(s.task_id, s.agent_id, s.mode)].append(s)
+        if s.failure_stage == INFRA:
+            infra_cells[(s.task_id, s.agent_id, s.mode)] += 1
+        else:
+            cells[(s.task_id, s.agent_id, s.mode)].append(s)
         if s.task_id not in task_ids:
             task_ids.append(s.task_id)
     p.append(
@@ -267,9 +283,11 @@ def render_html(
                 f"{r.failure_stage}: {r.failure_reason}" for r in rs if not r.success
             ).most_common(1)
             cls = "cell-ok" if rs and ok == len(rs) else ""
+            n_infra = infra_cells[(t, a, m)]
             p.append(
                 f"<td class='{cls}'>{ok}/{len(rs)}"
                 + (f"<span class='why'>{e(why[0][0])}</span>" if why else "")
+                + (f"<span class='why'>+{n_infra} infra (excluded)</span>" if n_infra else "")
                 + "</td>"
             )
         p.append("</tr>")

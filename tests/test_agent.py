@@ -165,10 +165,10 @@ async def test_custom_agent_returning_history(pool):
 
 async def test_agent_error_with_partial_history_is_scored(pool):
     async def agent(prompt, ctx):
-        raise AgentError(TimeoutError("model timed out"), HISTORY)
+        raise AgentError(RuntimeError("parser blew up"), HISTORY)
 
     tr = await run_custom(pool, TASK, AgentConfig(id="e", kind="python"), agent, "all", 0)
-    assert tr.error == "TimeoutError: model timed out" and len(tr.calls) == 1
+    assert tr.error == "RuntimeError: parser blew up" and len(tr.calls) == 1
     s = score(tr, TASK, {})
     assert s.failure_stage == "crash" and s.real_calls == 1 and s.arg_accuracy == 1
 

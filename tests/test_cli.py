@@ -1,4 +1,6 @@
 import json
+import sys
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -192,3 +194,49 @@ tasks:
     assert json.loads((out / "summary.json").read_text())["groups"][0]["runs"] == 1
     r = runner.invoke(app, ["report", str(out)])
     assert r.exit_code == 0, r.output
+
+
+# ---- --resume and infra errors (#5) ----------------------------------------------------------
+def test_resume_finishes_remaining_runs(results, tmp_path):
+    src, _ = results
+    out = tmp_path / "resumed"
+    out.mkdir()
+    for f in ("traces.jsonl", "scores.jsonl"):
+        lines = (src / f).read_text(encoding="utf-8").splitlines()
+        (out / f).write_text("\n".join(lines[:5]) + "\n", encoding="utf-8")
+    args = ["run", str(DEMO_SUITE), "-o", str(out), "-a", "mock-good", "-k", "1"]
+    r = runner.invoke(app, [*args, "--resume", "--fail-under", "1.0"])
+    assert r.exit_code == 0, r.output
+    assert "resumed 5 completed run(s)" in r.output
+    clean = json.loads((src / "summary.json").read_text())["groups"]
+    got = json.loads((out / "summary.json").read_text())["groups"]
+    drop = lambda gs: [{k: v for k, v in g.items() if k != "p50_latency_ms"} for g in gs]  # noqa: E731
+    assert drop(got) == drop(clean)
+
+
+def test_resume_refuses_unknown_schema(tmp_path):
+    (tmp_path / "scores.jsonl").write_text('{"schema_version": "9"}\n', encoding="utf-8")
+    r = runner.invoke(app, ["run", str(DEMO_SUITE), "-o", str(tmp_path), "--resume"])
+    assert r.exit_code == 1 and "cannot resume" in r.output
+
+
+def test_infra_errors_are_reported(tmp_path):
+    flaky = Path(__file__).with_name("flaky_server.py")
+    (tmp_path / "suite.yaml").write_text(
+        f"""
+servers: [{{name: flaky, command: {json.dumps(sys.executable)}, args: [{json.dumps(str(flaky))}], max_restarts: 0}}]
+agents: [{{id: good, kind: mock, model: mock/good}}]
+repeats: 1
+tasks:
+  - {{id: die, prompt: "please die", expect: {{tools: [{{name: die}}]}}}}
+""",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    r = runner.invoke(app, ["run", str(tmp_path / "suite.yaml"), "-o", str(out)])
+    assert r.exit_code == 0, r.output
+    assert "1 run(s) hit infrastructure errors" in " ".join(r.output.split())
+    (g,) = json.loads((out / "summary.json").read_text())["groups"]
+    assert (g["runs"], g["infra_errors"]) == (0, 1)
+    html = (out / "report.html").read_text(encoding="utf-8")
+    assert "1 infra-error runs excluded" in html and "+1 infra (excluded)" in html

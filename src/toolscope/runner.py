@@ -15,14 +15,50 @@ from .agent import AgentFn, load_ref, run_builtin, run_custom
 from .config import AgentConfig, ExposureMode, Suite, Task
 from .llm import make_llm
 from .mcp_pool import MCPPool
-from .metrics import GroupStats, RunScore, aggregate, score
-from .schema import SCHEMA_KEY, SCHEMA_VERSION
+from .metrics import INFRA, GroupStats, RunScore, aggregate, score
+from .schema import SCHEMA_KEY, SCHEMA_VERSION, check_schema_version
 from .search import BM25Retriever
 from .trace import SEARCH_TOOL, Trace
 
 M = TypeVar("M", bound=BaseModel)
 
 CONFIG_ERROR = "config_error"  # prefix of Trace.error when an agent could not be built at all
+RUN_TIMEOUT = "run_timeout"  # prefix of Trace.infra_error when a run exceeded Suite.run_timeout_s
+
+JobKey = tuple[str, str, str, int]  # (agent_id, mode, task_id, repeat)
+
+
+def _job_key(x: Trace | RunScore) -> JobKey:
+    return (x.agent_id, x.mode, x.task_id, x.repeat)
+
+
+def _read_jsonl(path: Path, model: type[M]) -> list[M]:
+    """Records of a .jsonl output; a torn or invalid line (e.g. from a killed run) is skipped."""
+    out: list[M] = []
+    if not path.exists():
+        return out
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        check_schema_version(rec, f"{path.name} line {i}")
+        try:
+            out.append(model.model_validate(rec))
+        except ValueError:
+            continue
+    return out
+
+
+def load_results(out_dir: str | Path) -> tuple[list[Trace], list[RunScore]]:
+    """Traces and scores already written to `out_dir` (for `run_suite(resume_from=...)`). Missing files
+    yield empty lists; raises UnsupportedSchemaVersion for files from an incompatible toolscope."""
+    out = Path(out_dir)
+    return _read_jsonl(out / "traces.jsonl", Trace), _read_jsonl(out / "scores.jsonl", RunScore)
 
 
 def _redact_model(suite: Suite, m: M) -> M:
@@ -63,6 +99,11 @@ class RunResult:
     # agent id -> error, for agents that could not be built (bad `ref`, missing model, ...); every job
     # of such an agent is recorded as a `crash` run
     config_errors: dict[str, str] = field(default_factory=dict)
+    resumed: int = 0  # runs taken from a previous, interrupted run instead of being run again
+
+    @property
+    def infra_errors(self) -> int:
+        return sum(1 for s in self.scores if s.failure_stage == INFRA)
 
     def redacted(self) -> RunResult:
         """A copy with suite secrets scrubbed from every string field (structurally, so JSON stays valid)."""
@@ -111,17 +152,33 @@ async def run_suite(
     agent_fns: dict[str, AgentFn] | None = None,
     server_log: str | None = None,
     out_dir: str | Path | None = None,
+    resume_from: tuple[list[Trace], list[RunScore]] | None = None,
 ) -> RunResult:
     """`agent_fns` lets Python callers pass agent callables directly instead of `ref:` strings.
 
     Every job is isolated: an exception in one job (or an agent that cannot be built at all) is recorded
-    as a `crash` run instead of aborting the others. With `out_dir`, traces.jsonl and scores.jsonl are
-    written incrementally as jobs finish (`RunResult.save` rewrites them in sorted order at the end).
+    as a `crash` run instead of aborting the others; infrastructure failures are recorded as `infra` runs.
+    With `out_dir`, traces.jsonl and scores.jsonl are written incrementally as jobs finish
+    (`RunResult.save` rewrites them in sorted order at the end).
+
+    `resume_from` (see `load_results`) skips every job that already has both a trace and a score, except
+    `infra` runs and agent config errors, which are run again.
     """
     from .tokens import count
 
     agent_fns = dict(agent_fns or {})
-    sink = _JsonlSink(suite, out_dir) if out_dir is not None else None
+    done: dict[JobKey, tuple[Trace, RunScore]] = {}
+    if resume_from:
+        prev_traces = {_job_key(t): t for t in resume_from[0]}
+        for sc in resume_from[1]:
+            tr = prev_traces.get(_job_key(sc))
+            if (
+                tr is not None
+                and sc.failure_stage != INFRA
+                and not (tr.error or "").startswith(CONFIG_ERROR)
+            ):
+                done[_job_key(sc)] = (tr, sc)
+    sink: _JsonlSink | None = None
     try:
         async with MCPPool(
             suite.servers, base_dir=str(suite.base_dir), errlog_path=server_log, redact=suite.redact
@@ -147,19 +204,21 @@ async def run_suite(
                     config_errors[cfg.id] = f"{type(e).__name__}: {e}"
 
             async def run_job(cfg: AgentConfig, mode: ExposureMode, task: Task, rep: int) -> Trace:
-                def crashed(err: str) -> Trace:
+                def crashed(err: str | None, infra: str | None = None) -> Trace:
                     return Trace(
                         task_id=task.id,
                         agent_id=cfg.id,
                         mode=mode,
                         repeat=rep,
                         error=err,
+                        infra_error=infra,
                         exposed_tools=list(pool.tools),
                     )
 
                 if cfg.id in config_errors:
                     return crashed(f"{CONFIG_ERROR}: {config_errors[cfg.id]}")
-                try:
+
+                async def go() -> Trace:
                     if cfg.kind == "python":
                         return await run_custom(
                             pool,
@@ -175,10 +234,22 @@ async def run_suite(
                     return await run_builtin(
                         pool, task, cfg, llm, mode, rep, suite.exposure.search_top_k, retriever
                     )
+
+                try:
+                    return await asyncio.wait_for(go(), suite.run_timeout_s)
+                except asyncio.TimeoutError:
+                    return crashed(None, f"{RUN_TIMEOUT}: run exceeded {suite.run_timeout_s:g}s")
                 except Exception as e:
                     return crashed(f"{type(e).__name__}: {e}")
 
             async def one(cfg: AgentConfig, mode: ExposureMode, task: Task, rep: int) -> None:
+                prev = done.get((cfg.id, mode, task.id, rep))
+                if prev is not None:  # finished in the run being resumed (already in the sink)
+                    traces.append(prev[0])
+                    scores.append(prev[1])
+                    if on_progress:
+                        on_progress(prev[1])
+                    return
                 async with sem:
                     tr = await run_job(cfg, mode, task, rep)
                     try:
@@ -200,14 +271,21 @@ async def run_suite(
                     if on_progress:
                         on_progress(sc)
 
-            jobs = [
-                one(cfg, mode, task, rep)
+            keys = [
+                (cfg, mode, task, rep)
                 for cfg in suite.agents
                 for mode in (cfg.modes or suite.exposure.modes)
                 for task in suite.tasks
                 for rep in range(suite.repeats)
             ]
-            await asyncio.gather(*jobs)
+            # opened only once the servers are up, so a failed start never truncates resumable results;
+            # runs kept from a resumed run are rewritten first (dropping stale and torn lines)
+            if out_dir is not None:
+                sink = _JsonlSink(suite, out_dir)
+                for cfg, mode, task, rep in keys:
+                    if (prev := done.get((cfg.id, mode, task.id, rep))) is not None:
+                        sink.write(*prev)
+            await asyncio.gather(*(one(*k) for k in keys))
             tool_count = len(pool.tools)
     finally:
         if sink:
@@ -228,8 +306,16 @@ async def run_suite(
 
     traces.sort(key=key)
     scores.sort(key=key)
+    resumed = sum(1 for s in scores if _job_key(s) in done)
     return RunResult(
-        suite, traces, scores, aggregate(scores), tool_count, catalogue_tokens, config_errors
+        suite,
+        traces,
+        scores,
+        aggregate(scores),
+        tool_count,
+        catalogue_tokens,
+        config_errors,
+        resumed,
     )
 
 

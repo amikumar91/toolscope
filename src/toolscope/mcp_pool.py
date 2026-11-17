@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import importlib
 import os
 import threading
@@ -17,6 +19,8 @@ from mcp.client.stdio import stdio_client
 from .config import ServerConfig
 
 SEP = "__"
+# JSON-RPC code the SDK uses when the transport closes mid-request (mcp.types.CONNECTION_CLOSED)
+CONNECTION_CLOSED = -32000
 
 
 @dataclass
@@ -44,6 +48,7 @@ class CallOutcome:
     text: str
     latency_ms: float
     error: str | None = None
+    infra: bool = False  # the server, not the tool, failed (connection lost / server down)
 
 
 def _field(obj: Any, *names: str, default: Any = None) -> Any:
@@ -108,8 +113,44 @@ def _redacting_errlog(path: str, redact: Callable[[str], str]) -> Iterator[TextI
         t.join(timeout=5)
 
 
+def _is_connection_lost(e: BaseException) -> bool:
+    """The session's transport is gone (server process died, stream closed), as opposed to a tool error."""
+    code = _field(e, "code", default=None)
+    if not isinstance(code, int):
+        code = _field(_field(e, "error", default=None), "code", default=None)
+    if code == CONNECTION_CLOSED:
+        return True
+    names = {c.__name__ for c in type(e).__mro__}
+    if names & {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}:
+        return True
+    return isinstance(e, (ConnectionError, EOFError)) or "connection closed" in str(e).lower()
+
+
+class _Conn:
+    """One server's session, owned by a dedicated task so it can be torn down and restarted from any job
+    (anyio cancel scopes must be exited by the task that entered them)."""
+
+    def __init__(self, cfg: ServerConfig):
+        self.cfg = cfg
+        self.session: ClientSession | None = None
+        self.task: asyncio.Task[None] | None = None
+        self.stop = asyncio.Event()
+        self.lock = asyncio.Lock()
+        self.generation = 0  # bumped on every (re)start, so concurrent failures restart only once
+        self.restarts = 0
+        self.dead: str | None = None  # set once the server is down for good
+
+    @property
+    def alive(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+
 class MCPPool:
-    """Async context manager owning all server sessions for a run."""
+    """Async context manager owning all server sessions for a run.
+
+    Tool calls time out after the server's `call_timeout_s`. A server whose connection is lost is restarted
+    (up to `max_restarts` times); the call that hit the dead server returns an `infra` outcome.
+    """
 
     def __init__(
         self,
@@ -121,9 +162,8 @@ class MCPPool:
         self.servers = servers
         self.redact = redact
         self.base_dir = base_dir
-        self.sessions: dict[str, ClientSession] = {}
         self.tools: dict[str, ToolSpec] = {}
-        self._stack = AsyncExitStack()
+        self._conns: dict[str, _Conn] = {}
         # server stderr (tracebacks from tools that raise) goes to a log file, not the console
         import tempfile
 
@@ -131,40 +171,105 @@ class MCPPool:
             prefix="toolscope-servers-", suffix=".log"
         )
 
+    @property
+    def sessions(self) -> dict[str, ClientSession]:
+        return {n: c.session for n, c in self._conns.items() if c.session is not None}
+
+    async def _connect(self, stack: AsyncExitStack, cfg: ServerConfig) -> ClientSession:
+        if cfg.transport == "stdio":
+            assert cfg.command is not None  # guaranteed by ServerConfig validation
+            params = StdioServerParameters(
+                command=cfg.command, args=cfg.args, env=cfg.env, cwd=self.base_dir
+            )
+            errlog = stack.enter_context(
+                _redacting_errlog(self.errlog_path, self.redact)
+                if self.redact
+                else open(self.errlog_path, "a", encoding="utf-8")  # noqa: SIM115 - closed by the stack
+            )
+            read, write = await stack.enter_async_context(stdio_client(params, errlog=errlog))
+        else:
+            read, write = await _http_transport(stack, cfg)
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
+
+    async def _start(self, conn: _Conn) -> None:
+        ready: asyncio.Future[ClientSession] = asyncio.get_running_loop().create_future()
+        conn.stop = asyncio.Event()
+        stop = conn.stop
+
+        async def own() -> None:
+            try:
+                async with AsyncExitStack() as stack:
+                    ready.set_result(await self._connect(stack, conn.cfg))
+                    await stop.wait()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:  # startup failure, or teardown of a dead server
+                if not ready.done():
+                    ready.set_exception(e)
+
+        conn.task = asyncio.create_task(own(), name=f"toolscope-mcp-{conn.cfg.name}")
+        conn.session = await ready
+        conn.generation += 1
+
+    async def _close(self, conn: _Conn, timeout: float = 10.0) -> None:
+        conn.stop.set()
+        task, conn.session = conn.task, None
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout)
+        except BaseException:
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+    def _log(self, line: str) -> None:
+        with contextlib.suppress(OSError), open(self.errlog_path, "a", encoding="utf-8") as f:
+            f.write((self.redact or str)(f"[toolscope] {line}\n"))
+
+    async def _restart(self, conn: _Conn, generation: int, reason: str) -> None:
+        async with conn.lock:
+            if conn.generation != generation or conn.dead:
+                return  # another job already restarted (or gave up on) this server
+            await self._close(conn)
+            if conn.restarts >= conn.cfg.max_restarts:
+                conn.dead = f"server '{conn.cfg.name}' is down ({reason})"
+                self._log(f"server '{conn.cfg.name}' lost: {reason}; restart limit reached")
+                return
+            conn.restarts += 1
+            self._log(f"server '{conn.cfg.name}' lost: {reason}; restarting ({conn.restarts})")
+            try:
+                await self._start(conn)
+            except Exception as e:
+                conn.dead = f"server '{conn.cfg.name}' failed to restart: {type(e).__name__}: {e}"
+                self._log(conn.dead)
+
     async def __aenter__(self) -> MCPPool:
-        for cfg in self.servers:
-            if cfg.transport == "stdio":
-                assert cfg.command is not None  # guaranteed by ServerConfig validation
-                params = StdioServerParameters(
-                    command=cfg.command, args=cfg.args, env=cfg.env, cwd=self.base_dir
-                )
-                errlog = self._stack.enter_context(
-                    _redacting_errlog(self.errlog_path, self.redact)
-                    if self.redact
-                    else open(self.errlog_path, "a")  # noqa: SIM115 - closed by the exit stack
-                )
-                read, write = await self._stack.enter_async_context(
-                    stdio_client(params, errlog=errlog)
-                )
-            else:
-                read, write = await _http_transport(self._stack, cfg)
-            session = await self._stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            self.sessions[cfg.name] = session
-            listed = await session.list_tools()
-            for t in listed.tools:
-                spec = ToolSpec(
-                    qualified=f"{cfg.name}{SEP}{t.name}",
-                    server=cfg.name,
-                    name=t.name,
-                    description=t.description or "",
-                    input_schema=_field(t, "input_schema", "inputSchema", default={}) or {},
-                )
-                self.tools[spec.qualified] = spec
+        try:
+            for cfg in self.servers:
+                conn = self._conns[cfg.name] = _Conn(cfg)
+                await self._start(conn)
+                assert conn.session is not None
+                listed = await conn.session.list_tools()
+                for t in listed.tools:
+                    spec = ToolSpec(
+                        qualified=f"{cfg.name}{SEP}{t.name}",
+                        server=cfg.name,
+                        name=t.name,
+                        description=t.description or "",
+                        input_schema=_field(t, "input_schema", "inputSchema", default={}) or {},
+                    )
+                    self.tools[spec.qualified] = spec
+        except BaseException:
+            await self.__aexit__()
+            raise
         return self
 
-    async def __aexit__(self, *exc) -> None:
-        await self._stack.aclose()
+    async def __aexit__(self, *exc: Any) -> None:
+        for conn in self._conns.values():
+            await self._close(conn)
 
     async def call(self, qualified: str, args: dict[str, Any]) -> CallOutcome:
         spec = self.tools.get(qualified)
@@ -173,15 +278,34 @@ class MCPPool:
             spec = hits[0] if len(hits) == 1 else None
         if spec is None:
             return CallOutcome(False, f"Error: unknown tool '{qualified}'", 0.0, "unknown_tool")
+        conn = self._conns[spec.server]
+        if conn.dead or conn.session is None:
+            why = conn.dead or f"server '{spec.server}' is not connected"
+            return CallOutcome(False, f"Error: {why}", 0.0, f"infra: {why}", infra=True)
+        session, generation, timeout = conn.session, conn.generation, conn.cfg.call_timeout_s
         t0 = time.perf_counter()
         try:
-            res = await self.sessions[spec.server].call_tool(spec.name, args)
+            res = await asyncio.wait_for(session.call_tool(spec.name, args), timeout)
             ms = (time.perf_counter() - t0) * 1000
             text = _content_text(res)
             is_err = bool(_field(res, "is_error", "isError", default=False))
             return CallOutcome(not is_err, text, ms, text[:300] if is_err else None)
+        except asyncio.TimeoutError:
+            ms = (time.perf_counter() - t0) * 1000
+            if not conn.alive:  # the server died while we waited
+                return await self._lost(conn, generation, "timed out on a dead server", ms)
+            return CallOutcome(
+                False, f"Error: tool call timed out after {timeout:g}s", ms, "timeout"
+            )
         except (
             Exception
         ) as e:  # transport / validation errors surface to the model like real clients do
             ms = (time.perf_counter() - t0) * 1000
+            if _is_connection_lost(e) or not conn.alive:
+                return await self._lost(conn, generation, f"{type(e).__name__}: {e}", ms)
             return CallOutcome(False, f"Error: {type(e).__name__}: {e}", ms, str(e)[:300])
+
+    async def _lost(self, conn: _Conn, generation: int, reason: str, ms: float) -> CallOutcome:
+        await self._restart(conn, generation, reason)
+        why = f"server '{conn.cfg.name}' connection lost: {reason}"
+        return CallOutcome(False, f"Error: {why}", ms, f"infra: {why}"[:300], infra=True)

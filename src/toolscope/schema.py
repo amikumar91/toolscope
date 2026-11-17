@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = "1"
+# 1.1: `infra` failure stage + Trace.infra_error/retries, RunScore.retries, GroupStats.infra_errors/retries
+SCHEMA_VERSION = "1.1"
 SCHEMA_KEY = "schema_version"
+LEGACY_VERSION = "1"  # files written before versioning
 
 
 class UnsupportedSchemaVersion(ValueError):
@@ -26,7 +28,7 @@ def _major(version: Any) -> int:
 
 def check_schema_version(record: dict[str, Any], source: str = "output") -> str:
     """Return the record's schema version (default "1") or raise if its major version is unknown."""
-    version = str(record.get(SCHEMA_KEY, SCHEMA_VERSION))
+    version = str(record.get(SCHEMA_KEY, LEGACY_VERSION))
     if _major(version) != _major(SCHEMA_VERSION):
         raise UnsupportedSchemaVersion(
             f"{source} has {SCHEMA_KEY} {version!r}, but this toolscope reads major version "

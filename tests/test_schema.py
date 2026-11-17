@@ -3,8 +3,8 @@ import pytest
 from toolscope.schema import SCHEMA_VERSION, UnsupportedSchemaVersion, check_schema_version
 
 
-def test_missing_version_defaults_to_current():
-    assert check_schema_version({}) == SCHEMA_VERSION == "1"
+def test_missing_version_is_legacy_1():
+    assert check_schema_version({}) == "1" and SCHEMA_VERSION.startswith("1.")
 
 
 @pytest.mark.parametrize("v", ["1", "1.0", "1.12", 1])

@@ -9,6 +9,9 @@ Every failed run is attributed to exactly one funnel stage (the earliest that br
     orchestration wrong order, or ran out of turns
     outcome       calls were fine but the final answer / end-state check failed
     crash         agent raised
+    infra         infrastructure failed (rate limit / network / auth after retries, dead MCP server, run
+                  timeout). Checked first; such runs are excluded from every aggregate metric and counted
+                  in `GroupStats.infra_errors` instead
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from .schema import SCHEMA_VERSION
 from .trace import Trace
 
 STAGES = ["discovery", "selection", "invocation", "orchestration", "outcome", "crash"]
+INFRA = "infra"  # not a funnel stage: these runs say nothing about the model, so they're excluded
 
 
 def name_matches(expected: str, actual: str) -> bool:
@@ -97,6 +101,7 @@ class RunScore(BaseModel):
     cost_usd: float | None = None
     latency_ms: float = 0.0
     turns: int = 0
+    retries: int = 0  # model calls retried after transient errors
 
 
 def _run_check(ref: str, trace: Trace, task: Task) -> bool:
@@ -125,6 +130,7 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
         schema_tokens=trace.usage.schema_tokens,
         cost_usd=trace.usage.cost_usd,
         latency_ms=trace.latency_ms,
+        retries=trace.retries,
     )
 
     # ---- discovery ---------------------------------------------------------------------------
@@ -228,6 +234,8 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
         s.failure_stage, s.failure_reason = stage, why
         return s
 
+    if trace.infra_error:
+        return fail(INFRA, trace.infra_error)
     if trace.error and trace.error != "max_turns":
         return fail("crash", trace.error)
     if exp.no_tools:
@@ -266,7 +274,7 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
 class GroupStats(BaseModel):
     agent_id: str
     mode: str
-    runs: int
+    runs: int  # runs counted in the metrics below (infra runs excluded)
     tasks: int
     k: int
     pass_at_1: float
@@ -293,6 +301,8 @@ class GroupStats(BaseModel):
     tokens_per_success: float | None = None
     cost_per_success: float | None = None
     p50_latency_ms: float = 0.0
+    infra_errors: int = 0  # runs excluded from every metric above because infrastructure failed
+    retries: int = 0  # model calls retried after transient errors, summed over counted runs
 
 
 def _mean(xs: list[Any]) -> float | None:
@@ -305,11 +315,12 @@ def aggregate(scores: list[RunScore]) -> list[GroupStats]:
     for s in scores:
         groups[(s.agent_id, s.mode)].append(s)
     out = []
-    for (agent, mode), rs in groups.items():
+    for (agent, mode), all_rs in groups.items():
+        rs = [r for r in all_rs if r.failure_stage != INFRA]
         by_task: dict[str, list[RunScore]] = defaultdict(list)
         for r in rs:
             by_task[r.task_id].append(r)
-        k = max(len(v) for v in by_task.values())
+        k = max((len(v) for v in by_task.values()), default=0)
         tool_runs = [r for r in rs if not r.no_tools_task]
         succ = [r for r in rs if r.success]
         total_calls = sum(r.real_calls for r in rs)
@@ -351,6 +362,8 @@ def aggregate(scores: list[RunScore]) -> list[GroupStats]:
                 tokens_per_success=(tokens / len(succ)) if succ and tokens else None,
                 cost_per_success=(sum(costs) / len(succ)) if succ and costs else None,
                 p50_latency_ms=statistics.median([r.latency_ms for r in rs]) if rs else 0.0,
+                infra_errors=len(all_rs) - len(rs),
+                retries=sum(r.retries for r in rs),
             )
         )
     return sorted(out, key=lambda g: (-g.pass_at_1, g.agent_id, g.mode))
