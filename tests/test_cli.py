@@ -4,6 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import DEMO_SUITE
+from toolscope import SCHEMA_VERSION
 from toolscope.cli import app
 
 runner = CliRunner()
@@ -83,6 +84,58 @@ def test_report_rerenders(results):
     assert r.exit_code == 0, r.output
     html = (out / "report.html").read_text(encoding="utf-8")
     assert "demo-shop-crm" in html and "mock-good" in html
+
+
+def test_outputs_carry_schema_version(results):
+    out, _ = results
+    assert json.loads((out / "summary.json").read_text())["schema_version"] == SCHEMA_VERSION
+    for f in ("scores.jsonl", "traces.jsonl"):
+        recs = [json.loads(ln) for ln in (out / f).read_text(encoding="utf-8").splitlines() if ln]
+        assert recs and all(r["schema_version"] == SCHEMA_VERSION for r in recs), f
+
+
+def _copy_results(src, dst, edit):
+    """Copy summary.json + scores.jsonl, applying `edit(record)` to every JSON record."""
+    dst.mkdir()
+    summary = json.loads((src / "summary.json").read_text())
+    edit(summary)
+    (dst / "summary.json").write_text(json.dumps(summary))
+    lines = []
+    for ln in (src / "scores.jsonl").read_text(encoding="utf-8").splitlines():
+        rec = json.loads(ln)
+        edit(rec)
+        lines.append(json.dumps(rec) + "\n")
+    (dst / "scores.jsonl").write_text("".join(lines) + "\n", encoding="utf-8")
+
+
+def test_report_reads_results_without_schema_version(results, tmp_path):
+    legacy = tmp_path / "legacy"
+    _copy_results(results[0], legacy, lambda r: r.pop("schema_version"))
+    assert "schema_version" not in (legacy / "scores.jsonl").read_text()
+    r = runner.invoke(app, ["report", str(legacy)])
+    assert r.exit_code == 0, r.output
+    assert "mock-good" in (legacy / "report.html").read_text(encoding="utf-8")
+
+
+def test_report_accepts_newer_minor_version(results, tmp_path):
+    newer = tmp_path / "minor"
+    _copy_results(results[0], newer, lambda r: r.update(schema_version="1.7", added_later=True))
+    assert runner.invoke(app, ["report", str(newer)]).exit_code == 0
+
+
+@pytest.mark.parametrize("where", ["summary", "scores"])
+def test_report_rejects_unknown_major_version(results, tmp_path, where):
+    future = tmp_path / "future"
+
+    def edit(r):
+        if ("groups" in r) == (where == "summary"):
+            r["schema_version"] = "2"
+
+    _copy_results(results[0], future, edit)
+    r = runner.invoke(app, ["report", str(future)])
+    assert r.exit_code == 1 and not (future / "report.html").exists()
+    assert "schema_version '2'" in r.output and "upgrade toolscope" in r.output
+    assert ("summary.json" if where == "summary" else "scores.jsonl line 1") in r.output
 
 
 def test_tools_lists_catalogue():

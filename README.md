@@ -184,6 +184,8 @@ The built-in retriever is BM25 over name + description + parameter names. To tes
 
 `toolscope run` writes `report.html` (failure funnel, all metrics, per-task matrix with the most common failure reason), `summary.json`, `scores.jsonl` (one row per run), `traces.jsonl` (every call, arg, error and search) and `servers.log` (server stderr).
 
+**Schema versioning.** `summary.json` and every record in `scores.jsonl` and `traces.jsonl` carry `"schema_version"` (currently `"1"`; `toolscope.SCHEMA_VERSION`). New optional fields may be added within a major version, possibly as a minor bump (`"1.1"`). Removing, renaming or changing the meaning of a field bumps the major version. `toolscope report` reads any `1.x` file and treats files without the field (written before versioning) as `"1"`. It exits 1 with a clear error on another major version instead of misreading the file. Later outputs such as `tool_stats.json` use the same key.
+
 CI: `toolscope run suite.yaml --fail-under 0.9` exits 1 if any agent×mode group's pass^k is below 90%.
 
 Each job is isolated: if one run raises, it is recorded as a `crash` run (with the error) and the rest of the suite carries on. An agent that cannot be built at all (an unresolvable `ref`, a `litellm` agent without `model`, ...) is reported once as a `CONFIG ERROR`, every one of its runs is recorded as `crash` with an error starting `config_error:`, and `toolscope run` exits 1. `traces.jsonl` and `scores.jsonl` are appended and flushed as each job finishes, so an interrupted run still leaves one valid line per completed job; `summary.json` and `report.html` are written at the end (and the `.jsonl` files rewritten in suite order).

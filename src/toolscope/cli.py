@@ -13,6 +13,7 @@ from .config import Suite
 from .metrics import GroupStats, RunScore, aggregate
 from .report import print_console, render_html
 from .runner import run_suite
+from .schema import UnsupportedSchemaVersion, check_schema_version
 
 app = typer.Typer(
     add_completion=False, help="Measure whether LLMs find and use your MCP tools effectively."
@@ -94,13 +95,20 @@ def run(
 
 @app.command()
 def report(results_dir: Path = typer.Argument(Path("toolscope-results"))):
-    """Re-render the report from saved scores.jsonl."""
-    scores = [
-        RunScore.model_validate_json(line)
-        for line in (results_dir / "scores.jsonl").read_text(encoding="utf-8").splitlines()
-        if line
-    ]
-    summary = json.loads((results_dir / "summary.json").read_text(encoding="utf-8"))
+    """Re-render the report from saved scores.jsonl (any schema_version 1.x; files without one are 1)."""
+    try:
+        summary = json.loads((results_dir / "summary.json").read_text(encoding="utf-8"))
+        check_schema_version(summary, "summary.json")
+        scores = []
+        lines = (results_dir / "scores.jsonl").read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines, 1):
+            if line.strip():
+                rec = json.loads(line)
+                check_schema_version(rec, f"scores.jsonl line {i}")
+                scores.append(RunScore.model_validate(rec))
+    except UnsupportedSchemaVersion as e:
+        console.print(f"[red]ERROR: {escape(str(e))}[/red]")
+        raise typer.Exit(1) from None
     stats: list[GroupStats] = aggregate(scores)
     (results_dir / "report.html").write_text(
         render_html(
