@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .schema import SCHEMA_VERSION
+
 SEARCH_TOOL = "search_tools"
 
 
@@ -39,6 +41,7 @@ class Usage(BaseModel):
 
 
 class Trace(BaseModel):
+    schema_version: str = SCHEMA_VERSION  # of traces.jsonl records; see toolscope.schema
     task_id: str
     agent_id: str
     mode: Literal["all", "search", "external"] = "all"

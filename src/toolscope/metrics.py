@@ -23,6 +23,7 @@ import jsonschema
 from pydantic import BaseModel, Field
 
 from .config import ExpectedCall, Task
+from .schema import SCHEMA_VERSION
 from .trace import Trace
 
 STAGES = ["discovery", "selection", "invocation", "orchestration", "outcome", "crash"]
@@ -52,6 +53,7 @@ def args_match(exp: ExpectedCall, args: dict[str, Any]) -> bool:
 
 
 class RunScore(BaseModel):
+    schema_version: str = SCHEMA_VERSION  # of scores.jsonl records; see toolscope.schema
     task_id: str
     agent_id: str
     mode: str

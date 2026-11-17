@@ -16,6 +16,7 @@ from .config import AgentConfig, ExposureMode, Suite, Task
 from .llm import make_llm
 from .mcp_pool import MCPPool
 from .metrics import GroupStats, RunScore, aggregate, score
+from .schema import SCHEMA_KEY, SCHEMA_VERSION
 from .search import BM25Retriever
 from .trace import SEARCH_TOOL, Trace
 
@@ -91,6 +92,7 @@ class RunResult:
         (out / "summary.json").write_text(
             json.dumps(
                 {
+                    SCHEMA_KEY: SCHEMA_VERSION,
                     "suite": self.suite.name,
                     "tool_count": self.tool_count,
                     "catalogue_tokens": self.catalogue_tokens,
