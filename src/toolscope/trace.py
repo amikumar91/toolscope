@@ -53,6 +53,9 @@ class Trace(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     latency_ms: float = 0.0
     error: str | None = None  # agent crashed / hit turn limit
+    # infrastructure failure (rate limit after retries, dead server, run timeout): run excluded from metrics
+    infra_error: str | None = None
+    retries: int = 0  # model calls retried after transient errors (not counted as model errors)
     exposed_tools: list[str] = Field(
         default_factory=list
     )  # every tool name the model could have called

@@ -179,14 +179,49 @@ The built-in retriever is BM25 over name + description + parameter names. To tes
 | | err/call, first-call ok, recovery | error rate, first try right, fixed itself after an error |
 | orchestration | order, redundant, over-budget | ordering, identical repeated calls, calls beyond budget |
 | cost | schema tok, tok/success, $/success, p50 ms | what the effectiveness cost you |
+| infra | infra, retries | runs lost to infrastructure (excluded from everything above), model calls retried |
+
+Every failed run is attributed to the earliest broken stage: discovery → selection → invocation → orchestration → outcome, or `crash` if the agent raised. Runs where the *infrastructure* failed go to a separate `infra` stage instead. These are rate limits, network or auth errors that persist after retries, a dead MCP server, or a run timeout. They are **excluded** from pass@1, pass^k and every other metric, and counted in `infra_errors` (summary.json) and the report's `infra` column. A flaky provider never makes a model look worse.
 
 ## Outputs
 
 `toolscope run` writes `report.html` (failure funnel, all metrics, per-task matrix with the most common failure reason), `summary.json`, `scores.jsonl` (one row per run), `traces.jsonl` (every call, arg, error and search) and `servers.log` (server stderr).
 
-**Schema versioning.** `summary.json` and every record in `scores.jsonl` and `traces.jsonl` carry `"schema_version"` (currently `"1"`; `toolscope.SCHEMA_VERSION`). New optional fields may be added within a major version, possibly as a minor bump (`"1.1"`). Removing, renaming or changing the meaning of a field bumps the major version. `toolscope report` reads any `1.x` file and treats files without the field (written before versioning) as `"1"`. It exits 1 with a clear error on another major version instead of misreading the file. Later outputs such as `tool_stats.json` use the same key.
+**Schema versioning.** `summary.json` and every record in `scores.jsonl` and `traces.jsonl` carry `"schema_version"` (currently `"1.1"`; `toolscope.SCHEMA_VERSION`). New optional fields may be added within a major version, possibly as a minor bump (`"1.1"`). Removing, renaming or changing the meaning of a field bumps the major version. `toolscope report` reads any `1.x` file and treats files without the field (written before versioning) as `"1"`. It exits 1 with a clear error on another major version instead of misreading the file. Later outputs such as `tool_stats.json` use the same key. 1.1 added the `infra` failure stage, `infra_error` and `retries` on traces, `retries` on scores, and `infra_errors` and `retries` on groups. In 1.1, a group's `runs` counts only the runs included in the metrics, so infra runs aren't in it.
 
 CI: `toolscope run suite.yaml --fail-under 0.9` exits 1 if any agent×mode group's pass^k is below 90%.
+
+### Timeouts, retries and restarts
+
+Nothing waits forever. Defaults shown; set them in the suite YAML:
+
+```yaml
+servers:
+  - {name: shop, command: python, args: [servers.py, shop],
+     call_timeout_s: 60,   # per tool call; a timed-out call returns an error to the model, the run continues
+     max_restarts: 1}      # a server whose connection dies is restarted this many times, then marked down
+agents:
+  - {id: sonnet, kind: litellm, model: anthropic/claude-sonnet-4-5,
+     timeout_s: 120,       # per model call (built-in loop)
+     max_retries: 3,       # retries on 429 / 5xx / timeouts / connection errors
+     retry_backoff_s: 1}   # exponential backoff with full jitter: attempt n waits up to 1s * 2^(n-1), max 30s
+run_timeout_s: 600         # per run (agent x mode x task x repeat); null disables
+```
+
+- **Model calls** (built-in loop) that fail transiently are retried. The count goes in `retries` (trace, score and group stats) and never counts as a model error. If a call still fails, or fails with an auth error (401/403, never retried), the run is `infra`. Leave LiteLLM's own `num_retries` unset: retries done inside LiteLLM can't be counted.
+- **Tool calls** that exceed `call_timeout_s` return `Error: tool call timed out after Ns` (call error `timeout`). The model sees it like any tool error, so that's an `invocation` problem, not infra.
+- **Dead servers**: if a server's connection drops (stdio process exited, stream closed), the call that hit it records an error starting `infra:`, the run is `infra`, and the server is restarted for the remaining jobs (logged in `servers.log`). After `max_restarts`, every call to that server fails as `infra`.
+- **Custom agents**: an exception from your agent (or the `cause` of an `AgentError`) that looks like a rate limit, timeout, connection or auth error, or a `toolscope.InfraError` you raise yourself, makes the run `infra` instead of `crash`. `ctx.call_tool` raises `InfraError` when the server is down, and the run stays `infra` even if your agent catches it.
+- **Run timeout**: a run that exceeds `run_timeout_s` is `infra` with reason `run_timeout: ...`.
+
+### Resuming an interrupted run
+
+```bash
+toolscope run suite.yaml -o results            # Ctrl-C, crash, or infra errors part-way
+toolscope run suite.yaml -o results --resume   # keeps finished runs, runs only the rest
+```
+
+`--resume` reads `traces.jsonl` and `scores.jsonl` from `-o`, keeps every (agent, mode, task, repeat) that has both a trace and a score, and runs the remaining jobs. Torn last lines are ignored. `infra` runs and agent config errors are run again. The final summary is the same as an uninterrupted run. Use the same suite file and flags: runs that aren't part of the current job set (other agents, modes or repeats) are dropped. Raising `-k` with `--resume` runs only the new repeats. From Python: `run_suite(suite, out_dir=d, resume_from=toolscope.load_results(d))`.
 
 Each job is isolated: if one run raises, it is recorded as a `crash` run (with the error) and the rest of the suite carries on. An agent that cannot be built at all (an unresolvable `ref`, a `litellm` agent without `model`, ...) is reported once as a `CONFIG ERROR`, every one of its runs is recorded as `crash` with an error starting `config_error:`, and `toolscope run` exits 1. `traces.jsonl` and `scores.jsonl` are appended and flushed as each job finishes, so an interrupted run still leaves one valid line per completed job; `summary.json` and `report.html` are written at the end (and the `.jsonl` files rewritten in suite order).
 
@@ -195,13 +230,15 @@ Each job is isolated: if one run raises, it is recorded as a `crash` run (with t
 ```
 src/toolscope/
   config.py    suite / task / agent schema (pydantic)
-  mcp_pool.py  multi-server MCP client, server__tool namespacing, mcp 1.x + 2.x
+  mcp_pool.py  multi-server MCP client, server__tool namespacing, call timeouts, dead-server restart, mcp 1.x + 2.x
   search.py    BM25 retriever + search_tools meta-tool
   llm.py       LiteLLM adapter + offline MockLLM
-  agent.py     built-in tool loop, AgentContext, AgentError, custom-agent runner
+  agent.py     built-in tool loop (timeouts, retries), AgentContext, AgentError, custom-agent runner
+  errors.py    infra-error classification (rate limit / timeout / network / auth), InfraError, backoff
+  schema.py    output schema_version + check
   trace.py     framework-neutral Trace, OpenAI-message import
   metrics.py   per-run scoring, funnel attribution, aggregation
-  runner.py    agents × modes × tasks × repeats
+  runner.py    agents × modes × tasks × repeats, run timeout, --resume
   report.py    console + HTML report
   cli.py       toolscope run | report | tools
 ```

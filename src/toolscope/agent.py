@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import json
@@ -23,7 +24,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .config import AgentConfig, ExposureMode, Task
-from .llm import LLM
+from .errors import InfraError, backoff_s, describe, is_infra_error, is_retryable
+from .llm import LLM, LLMResponse
 from .mcp_pool import MCPPool, ToolSpec
 from .search import SEARCH_TOOL_SPEC, BM25Retriever, Retriever
 from .tokens import count
@@ -35,6 +37,31 @@ def _search_result_text(specs: list[ToolSpec]) -> str:
         return "Found tools: (none matched; try different words)"
     lines = [f"- {s.qualified}: {s.description[:160]}" for s in specs]
     return "Found tools (now callable):\n" + "\n".join(lines)
+
+
+async def complete_with_retry(
+    llm: LLM, messages: list[dict], tools: list[dict], cfg: AgentConfig, trace: Trace, seed: int
+) -> LLMResponse:
+    """One model call with `cfg.timeout_s`, retried up to `cfg.max_retries` times (exponential backoff with
+    jitter) on transient errors. Retries are counted in `trace.retries`. If it still fails with an
+    infrastructure error, raises InfraError so the run is attributed to `infra`, not the model."""
+    attempt = 0
+    while True:
+        try:
+            coro = llm.complete(messages, tools, seed=seed)
+            return await (asyncio.wait_for(coro, cfg.timeout_s) if cfg.timeout_s else coro)
+        except Exception as e:
+            if isinstance(e, asyncio.TimeoutError):
+                e = TimeoutError(f"model call timed out after {cfg.timeout_s:g}s")
+            if is_retryable(e) and attempt < cfg.max_retries:
+                attempt += 1
+                trace.retries += 1
+                await asyncio.sleep(backoff_s(attempt, cfg.retry_backoff_s))
+                continue
+            if is_infra_error(e):
+                tries = f" after {attempt + 1} attempts" if attempt else ""
+                raise InfraError(f"model call failed{tries}: {describe(e)}") from e
+            raise
 
 
 async def run_builtin(
@@ -68,7 +95,7 @@ async def run_builtin(
         for turn in range(1, cfg.max_turns + 1):
             tools = visible()
             trace.usage.schema_tokens += count(tools)
-            resp = await llm.complete(messages, tools, seed=repeat)
+            resp = await complete_with_retry(llm, messages, tools, cfg, trace, repeat)
             trace.turns = turn
             trace.usage.input_tokens += resp.input_tokens
             trace.usage.output_tokens += resp.output_tokens
@@ -155,6 +182,8 @@ async def run_builtin(
                             turn=turn,
                         )
                     )
+                    if out.infra:
+                        raise InfraError(out.error or out.text)
                     content = (
                         out.text
                         if out.ok
@@ -168,9 +197,19 @@ async def run_builtin(
         else:
             trace.error = "max_turns"
     except Exception as e:
-        trace.error = f"{type(e).__name__}: {e}"
+        _record_failure(trace, e)
     trace.latency_ms = (time.perf_counter() - t0) * 1000
     return trace
+
+
+def _record_failure(trace: Trace, e: BaseException) -> None:
+    """Infrastructure failures go to `infra_error` (run excluded from metrics); anything else is a crash."""
+    if is_infra_error(e):
+        trace.infra_error = trace.infra_error or (
+            str(e) if isinstance(e, InfraError) else describe(e)
+        )
+    else:
+        trace.error = describe(e)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -220,6 +259,8 @@ class AgentContext:
         return [self._pool.tools[h] for h in hits]
 
     async def call_tool(self, name: str, args: dict[str, Any]) -> str:
+        """Call a tool. Raises InfraError if its server is down (the run is then attributed to `infra`,
+        even if your agent catches the exception)."""
         out = await self._pool.call(name, args)
         self._trace.calls.append(
             ToolCall(
@@ -232,6 +273,9 @@ class AgentContext:
                 known=name in self._pool.tools,
             )
         )
+        if out.infra:
+            self._trace.infra_error = self._trace.infra_error or out.error
+            raise InfraError(out.error or out.text)
         return out.text
 
     def record_usage(
@@ -292,7 +336,10 @@ async def run_custom(
         except AgentError as e:
             out = e.messages
             c = e.cause
-            trace.error = f"{type(c).__name__}: {c}" if isinstance(c, BaseException) else str(c)
+            if isinstance(c, BaseException):
+                _record_failure(trace, c)
+            else:
+                trace.error = str(c)
         if isinstance(out, list):  # OpenAI-format history
             parsed = Trace.from_openai_messages(
                 out,
@@ -308,6 +355,6 @@ async def run_custom(
         else:
             trace.final_answer = str(out or "")
     except Exception as e:
-        trace.error = f"{type(e).__name__}: {e}"
+        _record_failure(trace, e)
     trace.latency_ms = (time.perf_counter() - t0) * 1000
     return trace

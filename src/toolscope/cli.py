@@ -12,7 +12,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 from .config import Suite
 from .metrics import GroupStats, RunScore, aggregate
 from .report import print_console, render_html
-from .runner import run_suite
+from .runner import load_results, run_suite
 from .schema import UnsupportedSchemaVersion, check_schema_version
 
 app = typer.Typer(
@@ -31,9 +31,22 @@ def run(
     fail_under: float = typer.Option(
         None, help="exit 1 if any group's pass^k is below this (0-1). For CI."
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="keep the runs already in --out (from an interrupted run) and run only the rest; "
+        "infra-error runs are retried. Use the same suite and flags.",
+    ),
 ):
     """Run a suite and write traces, scores, summary.json and report.html."""
     suite = Suite.load(suite_path)
+    previous = None
+    if resume:
+        try:
+            previous = load_results(out)
+        except UnsupportedSchemaVersion as e:
+            console.print(f"[red]ERROR: cannot resume: {escape(str(e))}[/red]")
+            raise typer.Exit(1) from None
     if repeats:
         suite.repeats = repeats
     if agent:
@@ -56,6 +69,7 @@ def run(
                 on_progress=lambda s: prog.advance(bar),
                 server_log=str(out / "servers.log"),
                 out_dir=out,
+                resume_from=previous,
             )
         )
     result = result.redacted()
@@ -74,6 +88,13 @@ def run(
     console.print(
         f"\n[dim]wrote {path}/report.html, summary.json, scores.jsonl, traces.jsonl, servers.log[/dim]"
     )
+    if resume:
+        console.print(f"[dim]resumed {result.resumed} completed run(s) from {out}[/dim]")
+    if result.infra_errors:
+        console.print(
+            f"[yellow]{result.infra_errors} run(s) hit infrastructure errors (rate limits, timeouts, "
+            f"dead servers) and were excluded from the metrics; rerun with --resume to retry them[/yellow]"
+        )
     failed = False
     for agent_id, err in result.config_errors.items():
         console.print(

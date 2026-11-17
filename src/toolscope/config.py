@@ -91,6 +91,10 @@ class ServerConfig(BaseModel):
     env: dict[str, str] | None = None
     url: str | None = None
     headers: dict[str, str] | None = None
+    call_timeout_s: float | None = (
+        60.0  # per tool call; a timed-out call returns an error to the model
+    )
+    max_restarts: int = 1  # times a dead server is restarted before its calls fail as `infra`
 
     @model_validator(mode="after")
     def _check(self) -> ServerConfig:
@@ -122,6 +126,11 @@ class AgentConfig(BaseModel):
     modes: list[ExposureMode] | None = None  # override suite exposure modes for this agent
     # kind=python returning a history: name of the agent's own search meta-tool, if not `search_tools`
     search_tool: str = SEARCH_TOOL
+    # built-in loop (litellm/mock): per model call timeout, and retries with exponential backoff + jitter
+    # on rate limits, 5xx, timeouts and connection errors. Still failing -> the run is `infra`
+    timeout_s: float | None = 120.0
+    max_retries: int = 3
+    retry_backoff_s: float = 1.0  # base delay; attempt n waits uniform(0, base * 2**(n-1)), max 30s
 
 
 class ExpectedCall(BaseModel):
@@ -170,6 +179,9 @@ class Suite(BaseModel):
     exposure: ExposureConfig = Field(default_factory=ExposureConfig)
     repeats: int = 3  # k for pass@k / pass^k
     concurrency: int = 4
+    run_timeout_s: float | None = (
+        600.0  # per run (one agent x mode x task x repeat); exceeded -> `infra`
+    )
     base_dir: Path = Path(".")
     _secrets: set[str] = PrivateAttr(default_factory=set)
 
