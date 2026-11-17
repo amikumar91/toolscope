@@ -11,6 +11,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
+from .trace import SEARCH_TOOL
+
 # `$$` -> literal `$`; `${VAR}` / `${VAR:-default}` -> environment value. A bare `$VAR` is left alone.
 _VAR_RE = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 ExposureMode = Literal["all", "search"]
@@ -118,6 +120,8 @@ class AgentConfig(BaseModel):
     max_turns: int = 8
     params: dict[str, Any] = Field(default_factory=dict)  # passed through to litellm / your agent
     modes: list[ExposureMode] | None = None  # override suite exposure modes for this agent
+    # kind=python returning a history: name of the agent's own search meta-tool, if not `search_tools`
+    search_tool: str = SEARCH_TOOL
 
 
 class ExpectedCall(BaseModel):

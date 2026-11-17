@@ -124,6 +124,14 @@ s = score_messages(openai_messages, Task.model_validate(task_dict), schemas={"ge
 print(s.success, s.failure_stage, s.failure_reason)
 ```
 
+**Search metrics from a returned history.** `search_calls`, `recall@k`, `reciprocal_rank` and `skipped_search` work for histories (option B and `score_messages`) when the history contains:
+
+1. an assistant `tool_calls` entry for the search meta-tool, `search_tools` by default. If your agent's tool has another name, set `search_tool: <name>` on the agent in YAML, or pass `search_tool=` to `score_messages` / `Trace.from_openai_messages`. The query is read from the `query` argument (or `q`, or the first string argument);
+2. the matching `role: tool` message (same `tool_call_id`) holding the ranked hits, in any of these formats: a JSON list of names (`["get_order_status", ...]`), a JSON list of objects with a `name`/`qualified`/`tool` key, an object holding that list under `tools`/`results`/`matches`/`hits`, or toolscope's own text format (one `- server__tool: description` line per hit). As a fallback, known tool names mentioned in free text count, in order of appearance. Bare names are qualified when unambiguous. A search result that is an error (`is_error`, or text starting with `Error`) counts as a search with no hits;
+3. the real tool calls in later assistant turns. Calls made in a turn before the first search count as `skipped_search`.
+
+A `search`-mode agent that routes calls through `ctx` gets these from `ctx.search` instead; if it records any call via `ctx`, the returned history is not parsed. Imported histories (`score_messages`) get discovery metrics and `discovery` attribution only when they contain at least one search.
+
 ## Writing tasks
 
 ```yaml

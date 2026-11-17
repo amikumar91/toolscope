@@ -9,6 +9,7 @@ from toolscope.config import AgentConfig
 from toolscope.llm import LLMResponse
 from toolscope.mcp_pool import CallOutcome
 from toolscope.metrics import score
+from toolscope.search import BM25Retriever
 from toolscope.trace import SEARCH_TOOL
 
 TASK = Task.model_validate(
@@ -129,6 +130,13 @@ async def test_custom_sync_agent_returning_none(pool):
     assert tr.final_answer == "" and tr.error is None
 
 
+def asst(cid, name, args):
+    return {
+        "role": "assistant",
+        "tool_calls": [{"id": cid, "function": {"name": name, "arguments": args}}],
+    }
+
+
 HISTORY = [
     {"role": "user", "content": "status of ORD-1"},
     {
@@ -191,3 +199,64 @@ def test_load_ref_resolves_relative_to_base_dir(tmp_path, monkeypatch):
     assert sys.path.count(str(tmp_path)) == 1
     with pytest.raises(AttributeError):
         load_ref("ts_ref_mod:nope")
+
+
+async def test_history_with_search_scores_like_ctx_search(pool):
+    """#32: a search-mode agent returning its history must score like one using ctx.search."""
+    retriever = BM25Retriever(list(pool.tools.values()))
+    hits = retriever.search("order status", 5)
+
+    async def via_ctx(prompt, ctx):
+        found = ctx.search("order status")
+        await ctx.call_tool(found[0].qualified, {"order_id": "ORD-1"})
+        return "shipped"
+
+    async def via_history(prompt, ctx):
+        found = "\n".join(f"- {h}: {pool.tools[h].description}" for h in hits)
+        return [
+            {"role": "user", "content": prompt},
+            asst("s", SEARCH_TOOL, '{"query": "order status"}'),
+            {
+                "role": "tool",
+                "tool_call_id": "s",
+                "content": "Found tools (now callable):\n" + found,
+            },
+            asst("c", hits[0], '{"order_id": "ORD-1"}'),
+            {"role": "tool", "tool_call_id": "c", "content": "shipped"},
+            {"role": "assistant", "content": "shipped"},
+        ]
+
+    cfg = AgentConfig(id="a", kind="python")
+    ta = await run_custom(pool, TASK, cfg, via_ctx, "search", 0, retriever=retriever)
+    tb = await run_custom(pool, TASK, cfg, via_history, "search", 0, retriever=retriever)
+    a, b = score(ta, TASK, {}), score(tb, TASK, {})
+    fields = [
+        "success",
+        "failure_stage",
+        "search_calls",
+        "recall_at_k",
+        "reciprocal_rank",
+        "skipped_search",
+        "real_calls",
+        "arg_accuracy",
+        "hallucinated_calls",
+    ]
+    assert {f: getattr(a, f) for f in fields} == {f: getattr(b, f) for f in fields}
+    assert b.search_calls == 1 and b.recall_at_k == 1.0 and b.skipped_search is False
+    assert tb.searches[0].results == ta.searches[0].results == hits
+
+
+async def test_history_with_custom_search_tool_name(pool):
+    async def agent(prompt, ctx):
+        return [
+            asst("s", "lookup", '{"query": "status"}'),
+            {"role": "tool", "tool_call_id": "s", "content": '["get_order_status"]'},
+        ] + HISTORY[1:]
+
+    cfg = AgentConfig(id="a", kind="python", search_tool="lookup")
+    tr = await run_custom(pool, TASK, cfg, agent, "search", 0)
+    assert tr.searches[0].results == [STATUS] and [c.name for c in tr.real_calls] == [
+        "get_order_status"
+    ]
+    s = score(tr, TASK, {})
+    assert s.success and s.recall_at_k == 1.0 and not s.skipped_search

@@ -129,7 +129,9 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
     s.search_calls = len(trace.searches)
     s.hallucinated_calls = sum(1 for c in real if not c.known)
     surfaced: set[str] = {r for ev in trace.searches for r in ev.results}
-    if trace.mode == "search" and exp.tools:
+    # imported histories (mode "external") get discovery metrics when they contain searches
+    searched = trace.mode == "search" or (trace.mode == "external" and bool(trace.searches))
+    if searched and exp.tools:
         first_search_turn = min((ev.turn for ev in trace.searches), default=10**9)
         s.skipped_search = (
             any(c.turn < first_search_turn for c in real) if trace.searches else bool(real)
@@ -231,7 +233,7 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
             return fail("selection", f"called {len(real)} tool(s) on a task that needed none")
     else:
         missing = [e for e in exp.tools if not any(name_matches(e.name, c) for c in called)]
-        if trace.mode == "search":
+        if searched:
             unsurfaced = [e for e in missing if not any(name_matches(e.name, r) for r in surfaced)]
             if unsurfaced:
                 why = (
@@ -240,7 +242,7 @@ def score(trace: Trace, task: Task, schemas: dict[str, dict]) -> RunScore:
                     else f"search never surfaced {unsurfaced[0].name}"
                 )
                 return fail("discovery", why)
-        if missing and s.hallucinated_calls and trace.mode != "search":
+        if missing and s.hallucinated_calls and not searched:
             return fail("discovery", "called non-existent tool names")
         if missing:
             return fail("selection", f"never called {missing[0].name}")

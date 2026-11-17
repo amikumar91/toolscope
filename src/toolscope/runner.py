@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import IO, TypeVar
@@ -17,7 +17,7 @@ from .llm import make_llm
 from .mcp_pool import MCPPool
 from .metrics import GroupStats, RunScore, aggregate, score
 from .search import BM25Retriever
-from .trace import Trace
+from .trace import SEARCH_TOOL, Trace
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -236,12 +236,16 @@ def score_messages(
     task: Task,
     schemas: dict[str, dict] | None = None,
     agent_id: str = "external",
+    search_tool: str | Collection[str] = SEARCH_TOOL,
 ) -> RunScore:
-    """Offline scoring of an already-recorded OpenAI-format conversation (no MCP connection needed)."""
+    """Offline scoring of an already-recorded OpenAI-format conversation (no MCP connection needed).
+
+    `search_tool` names the conversation's search meta-tool, so its calls count as searches."""
     tr = Trace.from_openai_messages(
         messages,
         task_id=task.id,
         agent_id=agent_id,
         exposed_tools=list(schemas) if schemas else None,
+        search_tool=search_tool,
     )
     return score(tr, task, schemas or {})
