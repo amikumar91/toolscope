@@ -268,3 +268,51 @@ def test_aggregate_rates_and_costs():
     assert (g.pass_at_1, g.pass_at_k, g.pass_hat_k, g.k) == (0.5, 1.0, 0.0, 2)
     assert g.call_error_rate == 0.5 and g.recovery_rate == 0.0 and g.funnel["invocation"] == 1
     assert g.tokens_per_success == 100 and g.cost_per_success == 0.02
+
+
+# ---- searches in imported histories (#32) ----------------------------------------------------
+def _search_history(results_text, call="get_order_status", search_tool="search_tools"):
+    return [
+        {"role": "user", "content": "status of ORD-1"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "s", "function": {"name": search_tool, "arguments": '{"query": "status"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "s", "content": results_text},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "c", "function": {"name": call, "arguments": '{"order_id": "ORD-1"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c", "content": "ORD-1 shipped"},
+        {"role": "assistant", "content": "It has shipped."},
+    ]
+
+
+def test_score_messages_records_searches():
+    hits = "Found tools (now callable):\n- shop__get_order_details: x\n- shop__get_order_status: y"
+    s = score_messages(_search_history(hits), TASK, SCHEMAS)
+    assert s.success and s.search_calls == 1 and s.skipped_search is False
+    assert s.recall_at_k == 1.0 and s.reciprocal_rank == 0.5 and s.real_calls == 1
+
+
+def test_score_messages_custom_search_tool_and_unsurfaced_tool():
+    s = score_messages(
+        _search_history('["cancel_order"]', call="get_order_details", search_tool="find"),
+        TASK,
+        SCHEMAS,
+        search_tool="find",
+    )
+    assert s.search_calls == 1 and s.recall_at_k == 0.0 and s.reciprocal_rank == 0.0
+    assert (s.failure_stage, s.failure_reason) == (
+        "discovery",
+        "search never surfaced get_order_status",
+    )
+
+
+def test_score_messages_without_searches_has_no_discovery_metrics():
+    s = score_messages(_search_history("x")[3:], TASK, SCHEMAS)
+    assert s.success and s.search_calls == 0 and s.recall_at_k is None and not s.skipped_search

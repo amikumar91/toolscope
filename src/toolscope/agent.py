@@ -295,10 +295,15 @@ async def run_custom(
             trace.error = f"{type(c).__name__}: {c}" if isinstance(c, BaseException) else str(c)
         if isinstance(out, list):  # OpenAI-format history
             parsed = Trace.from_openai_messages(
-                out, task_id=task.id, agent_id=cfg.id, exposed_tools=list(pool.tools), repeat=repeat
+                out,
+                task_id=task.id,
+                agent_id=cfg.id,
+                exposed_tools=list(pool.tools),
+                repeat=repeat,
+                search_tool=cfg.search_tool,
             )
-            if not trace.calls:
-                trace.calls = parsed.calls
+            if not trace.calls:  # nothing routed through ctx: the history is the record
+                trace.calls, trace.searches = parsed.calls, parsed.searches
             trace.final_answer, trace.turns = parsed.final_answer, parsed.turns
         else:
             trace.final_answer = str(out or "")

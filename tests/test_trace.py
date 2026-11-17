@@ -1,4 +1,6 @@
-from toolscope.trace import SEARCH_TOOL, ToolCall, Trace
+import pytest
+
+from toolscope.trace import SEARCH_TOOL, ToolCall, Trace, parse_search_results
 
 
 def asst(*calls, content=None):
@@ -144,3 +146,86 @@ def test_assistant_with_content_and_tool_calls_is_not_final_answer():
 def test_real_calls_excludes_search():
     t = Trace(task_id="t", agent_id="a", calls=[ToolCall(name=SEARCH_TOOL), ToolCall(name="x")])
     assert [c.name for c in t.real_calls] == ["x"]
+
+
+# ---- search events (#32) ---------------------------------------------------------------------
+SEARCH_TEXT = (
+    "Found tools (now callable):\n"
+    "- shop__cancel_order: Cancel an order.\n"
+    "- shop__get_order_status: Get status."
+)
+
+
+def test_search_call_and_result_become_search_event():
+    t = parse(
+        [
+            asst(("s", SEARCH_TOOL, '{"query": "order status"}')),
+            tool("s", SEARCH_TEXT),
+            asst(("a", "get_order_status", '{"order_id": "1"}')),
+        ]
+    )
+    assert [c.name for c in t.calls] == [SEARCH_TOOL, "get_order_status"]
+    (ev,) = t.searches
+    assert ev.query == "order status" and ev.turn == 1
+    assert ev.results == ["shop__cancel_order", "shop__get_order_status"]
+
+
+def test_custom_search_tool_name_is_normalised():
+    t = Trace.from_openai_messages(
+        [asst(("s", "find_tools", '{"q": "cancel"}')), tool("s", '["cancel_order"]')],
+        task_id="t",
+        exposed_tools=EXPOSED,
+        search_tool="find_tools",
+    )
+    assert [c.name for c in t.calls] == [SEARCH_TOOL] and t.real_calls == []
+    assert t.searches[0].query == "cancel" and t.searches[0].results == ["shop__cancel_order"]
+
+
+def test_search_without_result_or_with_error_has_no_results():
+    t = parse(
+        [
+            asst(("s", SEARCH_TOOL, '{"query": "a"}'), ("e", SEARCH_TOOL, '{"query": "b"}')),
+            tool("e", "Error: index unavailable shop__cancel_order"),
+        ]
+    )
+    assert [(e.query, e.results) for e in t.searches] == [("a", []), ("b", [])]
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        (
+            '["shop__cancel_order", "get_order_status"]',
+            ["shop__cancel_order", "shop__get_order_status"],
+        ),
+        (
+            '{"tools": [{"name": "get_order_status"}, {"function": {"name": "cancel_order"}}]}',
+            ["shop__get_order_status", "shop__cancel_order"],
+        ),
+        ({"results": [{"qualified": "shop__cancel_order"}]}, ["shop__cancel_order"]),
+        ([{"type": "text", "text": '["cancel_order"]'}], ["shop__cancel_order"]),
+        (
+            "1. `cancel_order` - cancel\n2. get_order_status: status\n3. nope: x",
+            ["shop__cancel_order", "shop__get_order_status"],
+        ),
+        (
+            "Try get_order_status, or maybe shop__cancel_order.",
+            ["shop__get_order_status", "shop__cancel_order"],
+        ),
+        ('["get_order_status", "get_order_status", "teleport"]', ["shop__get_order_status"]),
+        ("nothing useful here", []),
+    ],
+)
+def test_parse_search_results_formats(content, expected):
+    assert parse_search_results(content, EXPOSED) == expected
+
+
+def test_parse_search_results_without_known_tools():
+    assert parse_search_results('["a", "b"]') == ["a", "b"]
+    assert parse_search_results("- srv__x: does x\n- note: not a tool") == ["srv__x"]
+    assert parse_search_results("free text srv__x") == []
+
+
+def test_non_object_args_are_kept_as_unparseable():
+    t = parse([asst(("a", "shop__get_order_status", "[1, 2]"))])
+    assert t.calls[0].args == {"__unparseable__": "[1, 2]"}
