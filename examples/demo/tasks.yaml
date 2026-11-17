@@ -14,7 +14,7 @@
   prompt: "How much was the total amount on order ORD-2001?"
   expect:
     tools: [{name: get_order_details, args: {order_id: ORD-2001}}]
-    answer_contains: ["15999"]
+    answer_regex: "15,?999"   # real models write 15,999
   tags: [single, decoy]
 
 - id: track-parcel

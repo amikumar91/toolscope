@@ -238,7 +238,7 @@ def render_html(
         ("tok/success", lambda g: _num(g.tokens_per_success)),
         (
             "$/success",
-            lambda g: "—" if g.cost_per_success is None else f"${g.cost_per_success:.4f}",
+            lambda g: "n/a" if g.cost_per_success is None else f"${g.cost_per_success:.4f}",
         ),
         ("p50 ms", lambda g: _num(g.p50_latency_ms)),
         ("retries", lambda g: _num(g.retries)),

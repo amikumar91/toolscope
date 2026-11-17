@@ -46,17 +46,46 @@ Two things stand out. pass@1 hides inconsistency: 67% of runs pass, but only 11%
 
 ```bash
 pip install -e ".[litellm]"     # any LiteLLM provider
-export ANTHROPIC_API_KEY=...    # or OPENAI_API_KEY, GEMINI_API_KEY, ...
 ```
+
+`model` is any [LiteLLM](https://docs.litellm.ai/docs/providers) model string. Credentials and endpoints come from LiteLLM's own environment variables, so a suite file needs no keys and no URLs:
+
+| provider | model (verified, see below) | key | base URL (optional) |
+|---|---|---|---|
+| Anthropic | `anthropic/claude-sonnet-5-5` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_BASE` |
+| OpenAI | `openai/gpt-6.1-sol` | `OPENAI_API_KEY` | `OPENAI_API_BASE` |
+| Google Gemini | `gemini/gemini-4-hydrogen` | `GEMINI_API_KEY` | `GEMINI_API_BASE` |
+| local | `ollama/qwen3:8b` | none | `OLLAMA_API_BASE` |
 
 ```yaml
 agents:
-  - {id: sonnet, kind: litellm, model: anthropic/claude-sonnet-4-5, temperature: 0.7}
-  - {id: gpt,    kind: litellm, model: openai/gpt-4.1-mini,          temperature: 0.7}
-  - {id: local,  kind: litellm, model: ollama/qwen3:8b}
+  - {id: claude, kind: litellm, model: anthropic/claude-sonnet-5-5, temperature: 1.0}
+  - {id: openai, kind: litellm, model: openai/gpt-6.1-sol,         temperature: 1.0}
+  - {id: gemini, kind: litellm, model: gemini/gemini-4-hydrogen,   temperature: 1.0}
 ```
 
-Use `temperature > 0` with `repeats >= 3`. pass^k only means something if runs can differ.
+Use `temperature > 0` with `repeats >= 3`. pass^k only means something if runs can differ. Current Claude and OpenAI reasoning models accept only `temperature: 1`; `temperature: null` sends none (provider default). Anything else in `params` is passed to `litellm.acompletion`.
+
+**Routers and gateways** (LiteLLM proxy, OpenRouter, a company gateway): set the base URL only when you need it. Either export the provider's `*_API_BASE` variable, or put it in `params` with an empty default, which means "not set" and falls back to the provider default:
+
+```yaml
+  - {id: claude, kind: litellm, model: "${CLAUDE_MODEL:-anthropic/claude-sonnet-5-5}",
+     params: {api_base: "${ROUTER_BASE:-}", api_key: "${ROUTER_KEY:-}"}}
+```
+
+OpenAI-format base URLs usually end in `/v1`; Anthropic- and Gemini-format ones usually don't, because LiteLLM appends the path. A router that only speaks the OpenAI format takes every model as `openai/<router's model name>`, e.g. `openai/google/gemini-4-hydrogen`. [`examples/providers/.env.example`](examples/providers/.env.example) lists every variable; keep the filled-in copy outside the repo.
+
+**Gemini schemas.** Gemini function declarations accept an OpenAPI subset of JSON Schema, so real MCP servers can be rejected before the model is evaluated. For any model string containing `gemini` (also through a router), the built-in loop rewrites tool schemas: `$ref` inlined, `$defs`, `$schema`, `additionalProperties`, `default`, `examples` and similar removed, `const` → `enum`, `oneOf` → `anyOf`, `allOf` merged, nullable unions → `nullable: true`, unsupported `format`s dropped. That changes what the model saw, so every rewrite is recorded per tool in the trace's `schema_sanitized`, and `schema tok` counts the rewritten schemas. Set `schema_dialect: gemini` to force it for a model name that doesn't say Gemini, or `none` to turn it off.
+
+**Cost** comes from LiteLLM's price table. When it has no price for a model (common for router-specific names), the run's `cost_usd` is null and `$/success` shows `n/a`, never a misleading `$0`. A group with any unpriced run shows `n/a`. Router names can be priced with LiteLLM's `input_cost_per_token` / `output_cost_per_token` in `params`.
+
+### Verified providers
+
+[`examples/providers/suite.yaml`](examples/providers/suite.yaml) runs the demo tasks plus a server with schemas Gemini used to reject (`$ref`, nullable, `const`, `uri` format) on one current model per provider:
+
+Results table pending: a full run (`repeats: 3`) on all three providers is tracked in #4.
+
+Live checks are opt-in and skipped without keys: `pytest -m live` runs each configured provider once and fails on any transport, auth or schema-rejection error.
 
 ### Secrets and environment variables
 
@@ -68,15 +97,16 @@ servers:
      headers: {Authorization: "Bearer ${GITHUB_TOKEN}"}}
   - {name: db, command: "${PYTHON:-python}", args: [db_server.py], env: {DB_PASSWORD: "${DB_PASSWORD}"}}
 agents:
-  - {id: gpt, kind: litellm, model: openai/gpt-4.1-mini, params: {api_base: "${OPENAI_BASE:-https://api.openai.com/v1}"}}
+  - {id: gpt, kind: litellm, model: "${GPT_MODEL:-openai/gpt-6.1-sol}", params: {api_base: "${OPENAI_BASE:-}"}}
 ```
 
 - `${VAR}` expands to the variable's value. If it isn't set, loading fails with `server 'github': env var GITHUB_TOKEN is not set`.
 - `${VAR:-default}` falls back to `default` when `VAR` is unset or empty.
 - `$$` writes a literal `$`. A bare `$VAR` (no braces) is left as-is.
-- Expansion applies only to `servers[].env`, `headers`, `url`, `command`, `args` and `agents[].params`. Task prompts and expectations are never expanded, so they can contain `$` freely.
+- Expansion applies only to `servers[].env`, `headers`, `url`, `command`, `args` and `agents[].params` / `agents[].model`. Task prompts and expectations are never expanded, so they can contain `$` freely.
 - Values expanded into `env`, `headers`, `url`, `args` and `params` are treated as secrets and replaced with `***` inside string values of `traces.jsonl`, `scores.jsonl`, `summary.json` and `report.html`, and in each line of `servers.log` (server stderr). JSON structure and non-string values are never touched, so outputs always stay parseable.
 - Values shorter than 4 characters, booleans (`true`, `false`, `yes`, `no`, `on`, `off`) and plain numbers (e.g. `DEBUG=true`, `PORT=8080`) aren't treated as secrets. `${VAR:-default}` fallbacks and `command` expansions aren't either.
+- Model names (`model`) aren't secrets. When the suite has a `litellm` agent, the values of provider credential variables LiteLLM reads by itself (names ending in `_API_KEY`, `_API_BASE`, `_BASE_URL`, `_API_TOKEN`, `_ACCESS_TOKEN`) are redacted too, since provider errors can quote them.
 
 ## Evaluate your own agent (LangGraph, pydantic-ai, OpenAI Agents SDK, hand-rolled)
 
@@ -105,7 +135,7 @@ async def agent(prompt: str, ctx: AgentContext) -> list[dict]:
 ```yaml
 agents:
   - {id: my-langgraph, kind: python, ref: "langgraph_agent:agent", modes: [all],
-     params: {model: "anthropic:claude-sonnet-4-5"}}
+     params: {model: "anthropic:claude-sonnet-5-5"}}
 ```
 
 Ready-made adapters in `examples/integrations/`, both verified end to end against the demo servers:
@@ -201,7 +231,7 @@ servers:
      call_timeout_s: 60,   # per tool call; a timed-out call returns an error to the model, the run continues
      max_restarts: 1}      # a server whose connection dies is restarted this many times, then marked down
 agents:
-  - {id: sonnet, kind: litellm, model: anthropic/claude-sonnet-4-5,
+  - {id: claude, kind: litellm, model: anthropic/claude-sonnet-5-5,
      timeout_s: 120,       # per model call (built-in loop)
      max_retries: 3,       # retries on 429 / 5xx / timeouts / connection errors
      retry_backoff_s: 1}   # exponential backoff with full jitter: attempt n waits up to 1s * 2^(n-1), max 30s
@@ -232,7 +262,7 @@ src/toolscope/
   config.py    suite / task / agent schema (pydantic)
   mcp_pool.py  multi-server MCP client, server__tool namespacing, call timeouts, dead-server restart, mcp 1.x + 2.x
   search.py    BM25 retriever + search_tools meta-tool
-  llm.py       LiteLLM adapter + offline MockLLM
+  llm.py       LiteLLM adapter, per-provider tool-schema sanitising (Gemini), offline MockLLM
   agent.py     built-in tool loop (timeouts, retries), AgentContext, AgentError, custom-agent runner
   errors.py    infra-error classification (rate limit / timeout / network / auth), InfraError, backoff
   schema.py    output schema_version + check
@@ -258,7 +288,8 @@ LLM-as-judge outcome checks · OpenTelemetry span import (score production traff
 ```bash
 pip install -e ".[dev]"
 ruff check . && ruff format --check . && mypy src
-pytest
+pytest                      # offline; live provider tests are deselected
+pytest -m live              # opt-in: real providers, skipped per provider without its key (see examples/providers/.env.example)
 ```
 
 CI runs these on Python 3.10–3.13 against both mcp 1.x and 2.x (Linux) and on Windows and macOS, plus a gate that fails if `mock-good` drops below 100% pass^k on the offline demo. The demo's HTML report is attached to each run as the `demo-results` artifact.

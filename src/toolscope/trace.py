@@ -59,6 +59,8 @@ class Trace(BaseModel):
     exposed_tools: list[str] = Field(
         default_factory=list
     )  # every tool name the model could have called
+    # tool name -> schema rewrites applied for the provider (e.g. Gemini); what the model saw differs
+    schema_sanitized: dict[str, list[str]] = Field(default_factory=dict)
     started_at: float = Field(default_factory=time.time)
 
     @property

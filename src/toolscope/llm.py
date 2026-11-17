@@ -16,6 +16,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .config import SchemaDialect
 from .search import _tokens
 from .trace import SEARCH_TOOL
 
@@ -44,12 +45,15 @@ class LLM(Protocol):
 
 # ---------------------------------------------------------------------------------------------------
 class LiteLLMClient:
-    def __init__(self, model: str, temperature: float = 0.0, **params: Any):
+    def __init__(self, model: str, temperature: float | None = 0.0, **params: Any):
         try:
             import litellm  # noqa: F401
         except ImportError as e:
             raise RuntimeError("kind=litellm needs `pip install toolscope[litellm]`") from e
-        self.model, self.temperature, self.params = model, temperature, params
+        self.model, self.temperature = model, temperature
+        # unset optional settings (`api_base: "${MY_BASE:-}"` -> "") are not sent, so LiteLLM falls back to
+        # its own env vars (OPENAI_API_BASE, ANTHROPIC_API_BASE, ...) and provider defaults
+        self.params = {k: v for k, v in params.items() if v not in ("", None)}
 
     async def complete(self, messages, tools, **params) -> LLMResponse:
         import litellm
@@ -58,12 +62,10 @@ class LiteLLMClient:
             "seed", None
         )  # repeat index; real providers sample naturally (set temperature>0 for k-run variance)
         kw = {**self.params, **params}
+        if self.temperature is not None:  # None = provider default (some models accept only 1)
+            kw.setdefault("temperature", self.temperature)
         resp = await litellm.acompletion(
-            model=self.model,
-            messages=messages,
-            tools=tools or None,
-            temperature=self.temperature,
-            **kw,
+            model=self.model, messages=messages, tools=tools or None, **kw
         )
         msg = resp.choices[0].message
         calls = [
@@ -71,16 +73,184 @@ class LiteLLMClient:
             for tc in (msg.tool_calls or [])
         ]
         usage = getattr(resp, "usage", None)
-        cost = None
-        with contextlib.suppress(Exception):
-            cost = litellm.completion_cost(completion_response=resp)
         return LLMResponse(
             msg.content,
             calls,
             getattr(usage, "prompt_tokens", 0) or 0,
             getattr(usage, "completion_tokens", 0) or 0,
-            cost,
+            _litellm_cost(resp),
         )
+
+
+def _litellm_cost(resp: Any) -> float | None:
+    """USD cost of one response, or None when LiteLLM has no price for the model (reported as "n/a", never 0)."""
+    import litellm
+
+    hidden = getattr(resp, "_hidden_params", None) or {}
+    cost = hidden.get("response_cost") if isinstance(hidden, dict) else None
+    if cost is None:
+        with contextlib.suppress(Exception):
+            cost = litellm.completion_cost(completion_response=resp)
+    return float(cost) if isinstance(cost, (int, float)) else None
+
+
+# ---------------------------------------------------------------------------------------------------
+# Tool-schema sanitising. Gemini function declarations accept an OpenAPI subset of JSON Schema and reject
+# requests that use other keywords, so a real MCP server can fail before the model is evaluated. What the
+# model saw changes, so every rewrite is reported and recorded in `Trace.schema_sanitized`.
+_GEMINI_DROP = (
+    "$schema",
+    "$id",
+    "$comment",
+    "$anchor",
+    "$dynamicAnchor",
+    "additionalProperties",
+    "unevaluatedProperties",
+    "patternProperties",
+    "propertyNames",
+    "dependentRequired",
+    "dependentSchemas",
+    "if",
+    "then",
+    "else",
+    "not",
+    "contains",
+    "examples",
+    "default",
+)
+_GEMINI_FORMATS = {
+    "string": {"enum", "date-time"},
+    "integer": {"int32", "int64"},
+    "number": {"float", "double"},
+}
+
+
+def resolve_dialect(dialect: SchemaDialect, model: str | None) -> str:
+    """`auto` -> "gemini" for any model string naming Gemini (gemini/, vertex_ai/, a router's google/gemini-...)."""
+    if dialect != "auto":
+        return dialect
+    return "gemini" if model and "gemini" in model.lower() else "none"
+
+
+def sanitize_tools(tools: list[dict], dialect: str) -> tuple[list[dict], dict[str, list[str]]]:
+    """Rewrite OpenAI-format tool specs for `dialect`. Returns (tools, {tool name: changes}); unchanged
+    tools are returned as-is and absent from the changes map."""
+    if dialect != "gemini":
+        return tools, {}
+    out, changed = [], {}
+    for t in tools:
+        fn = t.get("function") or {}
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            out.append(t)
+            continue
+        notes: set[str] = set()
+        new = _gemini_schema(params, params, notes, ())
+        if notes:
+            changed[fn.get("name", "?")] = sorted(notes)
+            out.append({**t, "function": {**fn, "parameters": new}})
+        else:
+            out.append(t)
+    return out, changed
+
+
+def _resolve_ref(ref: str, root: dict) -> dict | None:
+    if not ref.startswith("#/"):
+        return None
+    node: Any = root
+    for part in ref[2:].split("/"):
+        node = (
+            node.get(part.replace("~1", "/").replace("~0", "~")) if isinstance(node, dict) else None
+        )
+    return node if isinstance(node, dict) else None
+
+
+def _gemini_schema(s: Any, root: dict, notes: set[str], seen: tuple[str, ...]) -> Any:
+    if isinstance(s, list):
+        return [_gemini_schema(x, root, notes, seen) for x in s]
+    if not isinstance(s, dict):
+        return s
+    s = dict(s)
+    if "$ref" in s:  # inline the definition (siblings win); a cycle becomes an untyped object
+        ref = s.pop("$ref")
+        target = _resolve_ref(ref, root) if ref not in seen else None
+        notes.add(
+            "$ref inlined" if target is not None else "$ref unresolvable or recursive: dropped"
+        )
+        if target is not None:
+            s = {**_gemini_schema(target, root, notes, (*seen, ref)), **s}
+        elif "type" not in s:
+            s["type"] = "object"
+    for k in ("$defs", "definitions"):
+        if s.pop(k, None) is not None:
+            notes.add(f"{k} removed (refs inlined)")
+    for k in _GEMINI_DROP:
+        if k in s:
+            s.pop(k)
+            notes.add(f"{k} removed")
+    if "const" in s:
+        s["enum"] = [s.pop("const")]
+        notes.add("const -> enum")
+    for k, bound in (("exclusiveMinimum", "minimum"), ("exclusiveMaximum", "maximum")):
+        if k in s:
+            v = s.pop(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and bound not in s:
+                s[bound] = v
+            notes.add(f"{k} -> {bound}")
+    if "allOf" in s:  # merge the parts into this schema
+        parts = [_gemini_schema(p, root, notes, seen) for p in s.pop("allOf")]
+        req: list[str] = list(s.get("required") or [])
+        props = dict(s.get("properties") or {})
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            props.update(p.get("properties") or {})
+            req += [r for r in p.get("required") or [] if r not in req]
+            s = {**{k: v for k, v in p.items() if k not in ("properties", "required")}, **s}
+        if props:
+            s["properties"] = props
+        if req:
+            s["required"] = req
+        notes.add("allOf merged")
+    if "oneOf" in s:
+        s["anyOf"] = s.pop("oneOf")
+        notes.add("oneOf -> anyOf")
+    if isinstance(s.get("type"), list):  # ["string", "null"] -> string + nullable
+        types = [t for t in s["type"] if t != "null"]
+        if len(types) < len(s["type"]):
+            s["nullable"] = True
+        if len(types) == 1:
+            s["type"] = types[0]
+        else:
+            s.pop("type")
+            s["anyOf"] = [{"type": t} for t in types]
+        notes.add("type list -> type + nullable")
+    if isinstance(
+        s.get("anyOf"), list
+    ):  # drop {"type": "null"} branches; one branch left -> unwrap
+        branches = [_gemini_schema(b, root, notes, seen) for b in s["anyOf"]]
+        rest = [b for b in branches if not (isinstance(b, dict) and b.get("type") == "null")]
+        if len(rest) < len(branches):
+            s["nullable"] = True
+            notes.add("null branch -> nullable")
+        if len(rest) == 1 and isinstance(rest[0], dict):
+            s.pop("anyOf")
+            s = {**rest[0], **s}
+        else:
+            s["anyOf"] = rest
+    fmt, typ = s.get("format"), s.get("type")
+    if fmt is not None and fmt not in _GEMINI_FORMATS.get(
+        typ if isinstance(typ, str) else "", set()
+    ):
+        s.pop("format")
+        notes.add("unsupported format removed")
+    if isinstance(s.get("properties"), dict):
+        s["properties"] = {
+            k: _gemini_schema(v, root, notes, seen) for k, v in s["properties"].items()
+        }
+    if "items" in s:
+        s["items"] = _gemini_schema(s["items"], root, notes, seen)
+    return s
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -289,7 +459,7 @@ def _approx(messages: list[dict], tools: list[dict]) -> int:
     return (len(json.dumps(messages)) + len(json.dumps(tools))) // 4
 
 
-def make_llm(kind: str, model: str | None, temperature: float, params: dict) -> LLM:
+def make_llm(kind: str, model: str | None, temperature: float | None, params: dict) -> LLM:
     if kind == "mock":
         return MockLLM(model or "mock/good")
     if kind == "litellm":

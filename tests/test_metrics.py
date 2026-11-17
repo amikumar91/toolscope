@@ -261,13 +261,20 @@ def test_aggregate_rates_and_costs():
         SCHEMAS,
     )
     bad = score(
-        tr([ToolCall(name="shop__get_order_status", args={}, ok=False)], answer=""), TASK, SCHEMAS
+        tr([ToolCall(name="shop__get_order_status", args={}, ok=False)], answer="").model_copy(
+            update={"usage": Usage(cost_usd=0.01)}
+        ),
+        TASK,
+        SCHEMAS,
     )
     bad.repeat = 1
     (g,) = aggregate([good, bad])
     assert (g.pass_at_1, g.pass_at_k, g.pass_hat_k, g.k) == (0.5, 1.0, 0.0, 2)
     assert g.call_error_rate == 0.5 and g.recovery_rate == 0.0 and g.funnel["invocation"] == 1
-    assert g.tokens_per_success == 100 and g.cost_per_success == 0.02
+    assert g.tokens_per_success == 100 and g.cost_per_success == 0.03  # failed runs cost too
+    bad.cost_usd = None  # one unpriced run: the total is unknown, not understated
+    (g,) = aggregate([good, bad])
+    assert g.cost_per_success is None
 
 
 # ---- searches in imported histories (#32) ----------------------------------------------------
