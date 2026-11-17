@@ -16,6 +16,7 @@ from .trace import SEARCH_TOOL
 # `$$` -> literal `$`; `${VAR}` / `${VAR:-default}` -> environment value. A bare `$VAR` is left alone.
 _VAR_RE = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 ExposureMode = Literal["all", "search"]
+SchemaDialect = Literal["auto", "gemini", "none"]  # see toolscope.llm.sanitize_tools
 
 _SERVER_INTERP_KEYS = ("env", "headers", "url", "command", "args")
 _SECRET_KEYS = (
@@ -28,6 +29,20 @@ _MIN_SECRET_LEN = 4  # don't scrub trivially short values, they'd mangle unrelat
 # booleans and plain numbers (DEBUG=true, PORT=8080) are config, not credentials; scrubbing them mangles text
 _TRIVIAL_RE = re.compile(r"(?i)(true|false|yes|no|on|off|null|none|[-+]?\d+(\.\d+)?)")
 REDACTED = "***"
+# credentials LiteLLM reads from the environment by itself (OPENAI_API_KEY, ANTHROPIC_API_BASE, ...): they
+# never pass through `${VAR}` interpolation, but provider errors can quote them, so they are scrubbed too
+_PROVIDER_ENV_RE = re.compile(r"[A-Z0-9_]*_(API_KEY|API_BASE|BASE_URL|API_TOKEN|ACCESS_TOKEN)")
+
+
+def _is_secret_value(v: str) -> bool:
+    return len(v) >= _MIN_SECRET_LEN and not _TRIVIAL_RE.fullmatch(v.strip())
+
+
+def provider_env_secrets() -> set[str]:
+    """Values of provider credential env vars (see `_PROVIDER_ENV_RE`), for redaction."""
+    return {
+        v for k, v in os.environ.items() if _PROVIDER_ENV_RE.fullmatch(k) and _is_secret_value(v)
+    }
 
 
 def interpolate(value: Any, owner: str, secrets: set[str] | None = None) -> Any:
@@ -49,11 +64,7 @@ def interpolate(value: Any, owner: str, secrets: set[str] | None = None) -> Any:
         name, default = m.group(1), m.group(2)
         env = os.environ.get(name)
         if env:
-            if (
-                secrets is not None
-                and len(env) >= _MIN_SECRET_LEN
-                and not _TRIVIAL_RE.fullmatch(env.strip())
-            ):
+            if secrets is not None and _is_secret_value(env):
                 secrets.add(env)
             return env
         if default is not None:
@@ -75,10 +86,15 @@ def _interpolate_suite(data: dict[str, Any], secrets: set[str]) -> None:
             if key in srv:
                 srv[key] = interpolate(srv[key], owner, secrets if key in _SECRET_KEYS else None)
     for agent in data.get("agents") or []:
-        if isinstance(agent, dict) and "params" in agent:
-            agent["params"] = interpolate(
-                agent["params"], f"agent '{agent.get('id', '?')}'", secrets
-            )
+        if not isinstance(agent, dict):
+            continue
+        owner = f"agent '{agent.get('id', '?')}'"
+        if "params" in agent:
+            agent["params"] = interpolate(agent["params"], owner, secrets)
+        if isinstance(
+            agent.get("model"), str
+        ):  # e.g. "${CLAUDE_MODEL:-anthropic/...}"; not a secret
+            agent["model"] = interpolate(agent["model"], owner)
 
 
 class ServerConfig(BaseModel):
@@ -111,7 +127,8 @@ class AgentConfig(BaseModel):
     """What drives the tools.
 
     kind=litellm  -> built-in tool loop; `model` is any LiteLLM model string
-                     (e.g. anthropic/claude-sonnet-4-5, openai/gpt-4.1, ollama/qwen3).
+                     (e.g. anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol, gemini/gemini-4-hydrogen,
+                     ollama/qwen3). Keys and base URLs come from LiteLLM's env vars or `params`.
     kind=mock     -> offline deterministic model for demos/CI (`model`: mock/good | mock/sloppy).
     kind=python   -> your own agent: `ref` = "package.module:callable". See toolscope.agent.CustomAgent.
     """
@@ -120,9 +137,12 @@ class AgentConfig(BaseModel):
     kind: Literal["litellm", "mock", "python"] = "litellm"
     model: str | None = None
     ref: str | None = None
-    temperature: float = 0.0
+    temperature: float | None = 0.0  # null = don't send (provider default)
     max_turns: int = 8
     params: dict[str, Any] = Field(default_factory=dict)  # passed through to litellm / your agent
+    # built-in loop: rewrite tool schemas for providers that reject some JSON Schema keywords.
+    # auto = "gemini" when the model string names Gemini; changes are recorded in trace.schema_sanitized
+    schema_dialect: SchemaDialect = "auto"
     modes: list[ExposureMode] | None = None  # override suite exposure modes for this agent
     # kind=python returning a history: name of the agent's own search meta-tool, if not `search_tools`
     search_tool: str = SEARCH_TOOL
@@ -218,6 +238,8 @@ class Suite(BaseModel):
             _interpolate_suite(data, secrets)
         data["base_dir"] = path.parent.resolve()
         suite = cls.model_validate(data)
+        if any(a.kind == "litellm" for a in suite.agents):
+            secrets |= provider_env_secrets()
         suite._secrets = secrets
         if suite.tasks_file:
             tpath = (suite.base_dir / suite.tasks_file).resolve()

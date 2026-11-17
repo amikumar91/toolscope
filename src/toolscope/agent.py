@@ -25,7 +25,7 @@ from typing import Any
 
 from .config import AgentConfig, ExposureMode, Task
 from .errors import InfraError, backoff_s, describe, is_infra_error, is_retryable
-from .llm import LLM, LLMResponse
+from .llm import LLM, LLMResponse, resolve_dialect, sanitize_tools
 from .mcp_pool import MCPPool, ToolSpec
 from .search import SEARCH_TOOL_SPEC, BM25Retriever, Retriever
 from .tokens import count
@@ -81,9 +81,14 @@ async def run_builtin(
     retriever = retriever or BM25Retriever(list(specs.values()))
     loaded: dict[str, ToolSpec] = dict(specs) if mode == "all" else {}
 
+    dialect = resolve_dialect(cfg.schema_dialect, cfg.model) if cfg.kind == "litellm" else "none"
+
     def visible() -> list[dict]:
         base = [s.openai() for s in loaded.values()]
-        return base if mode == "all" else [SEARCH_TOOL_SPEC] + base
+        tools = base if mode == "all" else [SEARCH_TOOL_SPEC] + base
+        tools, changed = sanitize_tools(tools, dialect)
+        trace.schema_sanitized.update(changed)
+        return tools
 
     messages: list[dict[str, Any]] = []
     if task.system:

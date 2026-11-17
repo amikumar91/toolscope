@@ -53,6 +53,8 @@ packages = ["src/toolscope"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-m 'not live'"  # live provider tests are opt-in: pytest -m live
+markers = ["live: calls real model providers (needs API keys); run with `pytest -m live`"]
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,33 @@
+# One current model per provider on the demo tasks, plus a server with tricky JSON Schemas.
+#   pip install "toolscope[litellm]"
+#   set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY   (or a router: see .env.example)
+#   toolscope run suite.yaml -o results
+# Model ids can be overridden per provider with TOOLSCOPE_{CLAUDE,OPENAI,GEMINI}_MODEL.
+name: providers
+servers:
+  - {name: shop,   transport: stdio, command: python, args: [../demo/servers.py, shop]}
+  - {name: crm,    transport: stdio, command: python, args: [../demo/servers.py, crm]}
+  - {name: schema, transport: stdio, command: python, args: [schema_server.py]}
+
+agents:
+  # temperature 1: >0 gives run-to-run variance for pass^k, and the current Claude and OpenAI reasoning
+  # models accept no other value. Gemini tool schemas are sanitised automatically (schema_dialect: auto).
+  - {id: claude, kind: litellm, model: "${TOOLSCOPE_CLAUDE_MODEL:-anthropic/claude-sonnet-5-5}", temperature: 1.0}
+  - {id: openai, kind: litellm, model: "${TOOLSCOPE_OPENAI_MODEL:-openai/gpt-6.1-sol}",        temperature: 1.0}
+  - {id: gemini, kind: litellm, model: "${TOOLSCOPE_GEMINI_MODEL:-gemini/gemini-4-hydrogen}",  temperature: 1.0}
+
+exposure:
+  modes: [all, search]
+  search_top_k: 3
+
+tasks_file: ../demo/tasks.yaml
+tasks:
+  - id: add-catalogue-item   # nested model ($defs/$ref), Optional (anyOf null), Literal (const), uri format
+    prompt: "Add SKU-4471, a steel bracket measuring 10 x 4 cm, to the warehouse catalogue."
+    expect:
+      tools: [{name: add_catalogue_item, args: {item: {sku: SKU-4471, name: "re:bracket"}}}]
+      answer_contains: [CAT-88]
+    tags: [nested-schema]
+
+repeats: 3
+concurrency: 4

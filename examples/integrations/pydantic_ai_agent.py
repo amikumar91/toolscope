@@ -4,7 +4,7 @@
     # suite.yaml
     agents:
       - {id: pai-sonnet, kind: python, ref: "pydantic_ai_agent:agent", modes: [all],
-         params: {model: "anthropic:claude-sonnet-4-5"}}
+         params: {model: "anthropic:claude-sonnet-5-5"}}
 
 pydantic-ai keeps its own message types, so this file includes a small converter to the
 OpenAI shape toolscope scores. Written for pydantic-ai v2 (MCPToolset on FastMCP transports);
@@ -89,7 +89,7 @@ def to_openai(messages) -> list[dict]:
 
 async def agent(prompt: str, ctx: AgentContext):
     pai = Agent(
-        _model(ctx.params.get("model", "anthropic:claude-sonnet-4-5")),
+        _model(ctx.params.get("model", "anthropic:claude-sonnet-5-5")),
         toolsets=[_toolset(s, ctx.base_dir) for s in ctx.servers],
     )
     with capture_run_messages() as history:

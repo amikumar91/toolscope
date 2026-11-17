@@ -9,8 +9,10 @@ agents:
   - {id: mock-good,   kind: mock, model: mock/good}
   - {id: mock-sloppy, kind: mock, model: mock/sloppy}
   # Real models via LiteLLM (pip install toolscope[litellm]; set the provider's API key env var):
-  # - {id: sonnet,  kind: litellm, model: anthropic/claude-sonnet-4-5, temperature: 0.7}
-  # - {id: gpt,     kind: litellm, model: openai/gpt-4.1-mini, temperature: 0.7}
+  # - {id: claude,  kind: litellm, model: anthropic/claude-sonnet-5-5, temperature: 1.0}
+  # - {id: openai,  kind: litellm, model: openai/gpt-6.1-sol, temperature: 1.0}
+  # - {id: gemini,  kind: litellm, model: gemini/gemini-4-hydrogen, temperature: 1.0}
+  # (keys, routers and results: see ../providers/ and the README "Real models" section)
   # - {id: local,   kind: litellm, model: ollama/qwen3:8b}
   # Your own agent (pydantic-ai, LangChain, ...): see examples/integrations/
   - {id: my-agent, kind: python, ref: "my_agent:agent", modes: [all]}

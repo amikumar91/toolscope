@@ -360,7 +360,10 @@ def aggregate(scores: list[RunScore]) -> list[GroupStats]:
                 avg_input_tokens=_mean([r.input_tokens for r in rs]) or 0.0,
                 avg_schema_tokens=_mean([r.schema_tokens for r in rs]) or 0.0,
                 tokens_per_success=(tokens / len(succ)) if succ and tokens else None,
-                cost_per_success=(sum(costs) / len(succ)) if succ and costs else None,
+                # unknown if any run lacks a price: a partial sum would understate it
+                cost_per_success=(sum(costs) / len(succ))
+                if succ and costs and len(costs) == len(rs)
+                else None,
                 p50_latency_ms=statistics.median([r.latency_ms for r in rs]) if rs else 0.0,
                 infra_errors=len(all_rs) - len(rs),
                 retries=sum(r.retries for r in rs),
